@@ -1073,6 +1073,21 @@ RPCMethod derivehdkey()
 }
 
 // addresses
+RPCMethod reservename();
+RPCMethod registername();
+RPCMethod updatename();
+RPCMethod transfername();
+RPCMethod listmynames();
+RPCMethod getnewnamekeys();
+RPCMethod encryptnamemessage();
+RPCMethod decryptnamemessage();
+RPCMethod signasname();
+RPCMethod sendpaymail();
+RPCMethod listpaymail();
+RPCMethod releasereservation();
+RPCMethod releasename();
+RPCMethod createsubname();
+RPCMethod setnamerecords();
 RPCMethod getaddressinfo();
 RPCMethod getnewaddress();
 RPCMethod getrawchangeaddress();
@@ -1110,6 +1125,7 @@ RPCMethod encryptwallet();
 
 // spend
 RPCMethod sendtoaddress();
+RPCMethod getdepositaddress();
 RPCMethod createwithdrawal();
 RPCMethod refundwithdrawal();
 RPCMethod sendmany();
@@ -1139,6 +1155,21 @@ std::span<const CRPCCommand> GetWalletRPCCommands()
 {
     static const CRPCCommand commands[]{
         {"rawtransactions", &fundrawtransaction},
+        {"wallet", &reservename},
+        {"wallet", &registername},
+        {"wallet", &updatename},
+        {"wallet", &transfername},
+        {"wallet", &listmynames},
+        {"wallet", &getnewnamekeys},
+        {"wallet", &encryptnamemessage},
+        {"wallet", &decryptnamemessage},
+        {"wallet", &signasname},
+        {"wallet", &sendpaymail},
+        {"wallet", &listpaymail},
+        {"wallet", &releasereservation},
+        {"wallet", &releasename},
+        {"wallet", &createsubname},
+        {"wallet", &setnamerecords},
         {"wallet", &abandontransaction},
         {"wallet", &abortrescan},
         {"wallet", &addhdkey},
@@ -1184,6 +1215,7 @@ std::span<const CRPCCommand> GetWalletRPCCommands()
         {"wallet", &send},
         {"wallet", &sendmany},
         {"wallet", &sendtoaddress},
+        {"wallet", &getdepositaddress},
         {"wallet", &createwithdrawal},
         {"wallet", &refundwithdrawal},
         {"wallet", &setlabel},

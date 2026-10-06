@@ -5,6 +5,7 @@
 #ifndef BITCOIN_INTERFACES_CHAIN_H
 #define BITCOIN_INTERFACES_CHAIN_H
 
+#include <bitnames/state.h>
 #include <blockfilter.h>
 #include <common/settings.h>
 #include <consensus/amount.h>
@@ -190,6 +191,17 @@ public:
     //! Check if transaction is in mempool.
     virtual bool isInMempool(const Txid& txid) = 0;
 
+    //! BitNames: what an output carries, if it carries a name or a reservation in the chain as it is.
+    virtual std::optional<bitnames::Token> getBitNamesToken(const COutPoint& outpoint) = 0;
+    //! BitNames: a registered name.
+    virtual std::optional<bitnames::NameRecord> getBitName(const bitnames::NameHash& name) = 0;
+    //! BitNames: the output that carries a name, and its script (the owner).
+    virtual std::optional<std::pair<COutPoint, CScript>> getBitNameOwner(const bitnames::NameHash& name) = 0;
+    //! BitNames: the labels of the subnames of a name.
+    virtual std::vector<std::string> getBitNameSubnames(const bitnames::NameHash& parent) = 0;
+    //! BitNames: the parameters of the names, and the height of the next block.
+    virtual std::pair<Consensus::BitNamesParams, int> getBitNamesParams() = 0;
+
     //! The escrow of a sidechain as the deposits in the mempool leave it.
     struct SidechainEscrow {
         //! Whether the slot holds a sidechain.
@@ -205,6 +217,9 @@ public:
     //! node tells it. Fails if this chain is not a sidechain, if the mainchain
     //! node cannot be asked, or if it does not know the address.
     virtual util::Result<CScript> getMainchainScript(const std::string& address) = 0;
+
+    //! The slot this chain has on its mainchain, if it is a sidechain.
+    virtual std::optional<uint32_t> getSidechainSlot() = 0;
 
     //! Check if transaction has descendants in mempool.
     virtual bool hasDescendantsInMempool(const Txid& txid) = 0;

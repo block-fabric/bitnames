@@ -7,6 +7,8 @@
 
 #include <init.h>
 
+#include <bitnames/dns.h>
+
 #include <addrdb.h>
 #include <addrman.h>
 #include <banman.h>
@@ -311,6 +313,7 @@ void Interrupt(NodeContext& node)
 
 void Shutdown(NodeContext& node)
 {
+    bitnames::StopDnsServer();
     static Mutex g_shutdown_mutex;
     TRY_LOCK(g_shutdown_mutex, lock_shutdown);
     if (!lock_shutdown) return;
@@ -331,7 +334,7 @@ void Shutdown(NodeContext& node)
     if (node.cpu_miner) node.cpu_miner->Stop();
     if (node.follower) {
         node.follower->Stop();
-        if (node.chainman) node.chainman->m_mainchain_poll = nullptr;
+        if (node.chainman) WITH_LOCK(::cs_main, node.chainman->m_mainchain_poll = nullptr);
     }
     for (auto& client : node.chain_clients) {
         try {
@@ -527,6 +530,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-conf=<file>", strprintf("Specify path to read-only configuration file. Relative paths will be prefixed by datadir location (only useable from command line, not configuration file) (default: %s)", BITCOIN_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-datadir=<dir>", "Specify data directory", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
     argsman.AddArg("-dbbatchsize", strprintf("Maximum database write batch size in bytes (default: %u)", DEFAULT_DB_CACHE_BATCH), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-dnsbind=<addr>[:<port>]", strprintf("Answer DNS questions for the names (.%s) on this address and port (default port: %u), so that the computer can resolve them; see doc/bitnames.md", bitnames::DNS_TLD, bitnames::DEFAULT_DNS_PORT), ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::OPTIONS);
     argsman.AddArg("-dbcache=<n>", strprintf("Maximum database cache size <n> MiB (minimum %d, default: %d). Make sure you have enough RAM. In addition, unused memory allocated to the mempool is shared with this cache (see -maxmempool).", MIN_DBCACHE_BYTES / 1_MiB, node::GetDefaultDBCache() / 1_MiB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-includeconf=<file>", "Specify additional configuration file, relative to the -datadir path (only useable from configuration file, not command line)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-allowignoredconf", strprintf("For backwards compatibility, treat an unused %s file in the datadir as a warning, not an error.", BITCOIN_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -2438,6 +2442,10 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     // that the RPC's view of the best block is valid and consistent with
     // ChainstateManager's active tip.
     SetRPCWarmupFinished();
+
+    if (std::string dns_error; !bitnames::StartDnsServer(args, *node.chainman, dns_error)) {
+        return InitError(Untranslated(dns_error));
+    }
 
     uiInterface.InitMessage(_("Done loading"));
 

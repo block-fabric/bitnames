@@ -665,6 +665,12 @@ public:
         }
         return escrow;
     }
+    std::optional<uint32_t> getSidechainSlot() override
+    {
+        const Consensus::SidechainParams& params{chainman().GetConsensus().sidechain};
+        if (!params.enabled) return std::nullopt;
+        return params.slot;
+    }
     util::Result<CScript> getMainchainScript(const std::string& address) override
     {
         if (!m_node.follower) return util::Error{Untranslated("This chain is not a sidechain")};
@@ -709,6 +715,47 @@ public:
         if (!m_node.mempool) return IsRBFOptInEmptyMempool(tx);
         LOCK(m_node.mempool->cs);
         return IsRBFOptIn(tx, *m_node.mempool);
+    }
+    std::optional<bitnames::Token> getBitNamesToken(const COutPoint& outpoint) override
+    {
+        LOCK(::cs_main);
+        const auto& tokens{chainman().ActiveChainstate().m_scdb.m_side.BitNames().Tokens()};
+        const auto it{tokens.find(outpoint)};
+        if (it == tokens.end()) return std::nullopt;
+        return it->second;
+    }
+    std::optional<bitnames::NameRecord> getBitName(const bitnames::NameHash& name) override
+    {
+        LOCK(::cs_main);
+        const auto& names{chainman().ActiveChainstate().m_scdb.m_side.BitNames().Names()};
+        const auto it{names.find(name)};
+        if (it == names.end()) return std::nullopt;
+        return it->second;
+    }
+    std::optional<std::pair<COutPoint, CScript>> getBitNameOwner(const bitnames::NameHash& name) override
+    {
+        LOCK(::cs_main);
+        for (const auto& [outpoint, token] : chainman().ActiveChainstate().m_scdb.m_side.BitNames().Tokens()) {
+            if (token.kind != bitnames::Token::Kind::NAME || token.id != name) continue;
+            const auto coin{chainman().ActiveChainstate().CoinsTip().GetCoin(outpoint)};
+            if (!coin) return std::nullopt;
+            return std::make_pair(outpoint, coin->out.scriptPubKey);
+        }
+        return std::nullopt;
+    }
+    std::vector<std::string> getBitNameSubnames(const bitnames::NameHash& parent) override
+    {
+        LOCK(::cs_main);
+        std::vector<std::string> labels;
+        for (const auto& [hash, record] : chainman().ActiveChainstate().m_scdb.m_side.BitNames().Names()) {
+            if (record.parent == parent) labels.push_back(record.label);
+        }
+        return labels;
+    }
+    std::pair<Consensus::BitNamesParams, int> getBitNamesParams() override
+    {
+        LOCK(::cs_main);
+        return {chainman().GetConsensus().sidechain.bitnames, chainman().ActiveChain().Height() + 1};
     }
     bool isInMempool(const Txid& txid) override
     {

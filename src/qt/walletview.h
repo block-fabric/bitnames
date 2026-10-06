@@ -15,6 +15,7 @@ class OverviewPage;
 class PlatformStyle;
 class ReceiveCoinsDialog;
 class SidechainPage;
+class BitNamesPage;
 class SendCoinsDialog;
 class SendCoinsRecipient;
 class TransactionView;
@@ -63,6 +64,7 @@ private:
     QWidget *transactionsPage;
     ReceiveCoinsDialog *receiveCoinsPage;
     SidechainPage* sidechainPage;
+    BitNamesPage* namesPage;
     SendCoinsDialog *sendCoinsPage;
     AddressBookPage *usedSendingAddressesPage;
     AddressBookPage *usedReceivingAddressesPage;
@@ -81,6 +83,8 @@ public Q_SLOTS:
     void gotoReceiveCoinsPage();
     /** Switch to sidechain page */
     void gotoSidechainPage();
+    /** Switch to the names */
+    void gotoNamesPage();
     /** Switch to send coins page */
     void gotoSendCoinsPage(QString addr = "");
 
