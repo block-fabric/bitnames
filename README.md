@@ -155,8 +155,8 @@ mining), and **Names** (get a name, your names, records, subnames, paid messages
 
 ## Credits
 
-BitNames follows **BitNames by LayerTwo Labs** (plain-bitnames), ported with their permission, with
-features of Namecoin added. It is built on the sidechain template of Chains, which is based on
+BitNames is inspired by **BitNames by LayerTwo Labs** (plain-bitnames), with features of Namecoin
+added. It is built on the sidechain template of Chains, which is based on
 [Bitcoin Core](https://github.com/bitcoin/bitcoin) v32; its README is in
 [doc/README-bitcoin-core.md](doc/README-bitcoin-core.md).
 

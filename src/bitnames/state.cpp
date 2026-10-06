@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
-// After BitNames by LayerTwo Labs (plain-bitnames), ported with their permission.
+// Inspired by BitNames by LayerTwo Labs (plain-bitnames).
 
 #include <bitnames/state.h>
 

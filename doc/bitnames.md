@@ -1,10 +1,10 @@
 # BitNames: names on a sidechain
 
 BitNames is a sidechain of Chains (slot 3) on which names are owned like coins. A name points to
-addresses, keys and DNS records; its owner can be paid with messages only they can read. It
-follows **BitNames by LayerTwo Labs** (plain-bitnames), ported with their permission to this
-Bitcoin Core based sidechain, with Bitcoin's keys and transactions, the defects of the original
-fixed, and features of Namecoin added: DNS records on the chain, subnames, public names and a DNS
+addresses, keys and DNS records; its owner can be paid with messages only they can read. It is
+inspired by **BitNames by LayerTwo Labs** (plain-bitnames), built anew on this Bitcoin Core based
+sidechain, with Bitcoin's keys and transactions, without the defects of the original, and with
+features of Namecoin added: DNS records on the chain, subnames, public names and a DNS
 server for the `.x` domain.
 
 ## Names
