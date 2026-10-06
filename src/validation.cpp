@@ -7,6 +7,8 @@
 
 #include <validation.h>
 
+#include <bitnames/state.h>
+
 #include <arith_uint256.h>
 #include <chain.h>
 #include <checkqueue.h>
@@ -801,6 +803,27 @@ bool MemPoolAccept::DrivechainChecks(Workspace& ws)
                 if (!side.CheckRefund(*refund, reject_reason)) return ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, reject_reason);
                 if (const auto other{m_pool.m_refunds.find(refund->withdrawal)}; other != m_pool.m_refunds.end() && !ws.m_conflicts.contains(other->second)) {
                     return ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "sc-refund-in-mempool");
+                }
+            }
+        }
+
+        // The names. A name or a reservation is spent once its output is in a block: what an
+        // unconfirmed output carries is not known until then.
+        std::string reject_reason;
+        for (const CTxIn& in : tx.vin) {
+            if (const CTransactionRef parent{m_pool.get(in.prevout.hash)}; parent && bitnames::TokenOutputs(*parent).contains(in.prevout.n)) {
+                return ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "bn-token-unconfirmed");
+            }
+        }
+        const int height{m_active_chainstate.m_chain.Height() + 1};
+        if (!side.BitNames().CheckTx(tx, height, side_params.bitnames, reject_reason)) {
+            return ws.m_state.Invalid(TxValidationResult::TX_CONSENSUS, reject_reason);
+        }
+        // One registration of a name at a time: the second could never be mined.
+        if (const auto marker{bitnames::GetMarker(tx)}; marker && marker->operation) {
+            if (const auto* reg{std::get_if<bitnames::Register>(&*marker->operation)}) {
+                if (const auto other{m_pool.m_bitnames_registrations.find(reg->name)}; other != m_pool.m_bitnames_registrations.end() && !ws.m_conflicts.contains(other->second)) {
+                    return ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "bn-registration-in-mempool");
                 }
             }
         }
@@ -4882,7 +4905,7 @@ void Chainstate::RemoveStaleDrivechainTxs()
     AssertLockHeld(::cs_main);
     if (!m_mempool) return;
     AssertLockHeld(m_mempool->cs);
-    if (m_mempool->m_bmm_requests.empty() && m_mempool->m_escrow_txs.empty() && m_mempool->m_refunds.empty()) return;
+    if (m_mempool->m_bmm_requests.empty() && m_mempool->m_escrow_txs.empty() && m_mempool->m_refunds.empty() && m_mempool->m_bitnames_txs.empty()) return;
     const CBlockIndex* tip{m_chain.Tip()};
     if (!tip) return;
 
@@ -4893,6 +4916,13 @@ void Chainstate::RemoveStaleDrivechainTxs()
         for (const auto& [withdrawal, txid] : m_mempool->m_refunds) {
             if (m_scdb.m_side.Withdrawals().contains(withdrawal) && !m_scdb.m_side.InBundle(withdrawal)) continue;
             if (const CTransactionRef tx{m_mempool->get(txid)}) stale.push_back(tx);
+        }
+        // Name transactions that the names as they are now no longer allow: a reservation spent by
+        // another, a name registered by another.
+        std::string reject_reason;
+        for (const Txid& txid : m_mempool->m_bitnames_txs) {
+            const CTransactionRef tx{m_mempool->get(txid)};
+            if (tx && !m_scdb.m_side.BitNames().CheckTx(*tx, tip->nHeight + 1, m_chainman.GetConsensus().sidechain.bitnames, reject_reason)) stale.push_back(tx);
         }
     }
 

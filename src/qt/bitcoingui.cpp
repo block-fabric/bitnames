@@ -334,6 +334,15 @@ void BitcoinGUI::createActions()
     connect(historyAction, &QAction::triggered, this, &BitcoinGUI::gotoHistoryPage);
     connect(sidechainAction, &QAction::triggered, [this]{ showNormalIfMinimized(); });
     connect(sidechainAction, &QAction::triggered, this, &BitcoinGUI::gotoSidechainPage);
+
+    namesAction = new QAction(platformStyle->SingleColorIcon(":/icons/address-book"), tr("&Names"), this);
+    namesAction->setStatusTip(tr("Names: get one, point it at your servers (name.x), hand out subnames, write to their owners"));
+    namesAction->setToolTip(namesAction->statusTip());
+    namesAction->setCheckable(true);
+    namesAction->setShortcut(QKeySequence(QStringLiteral("Alt+6")));
+    tabGroup->addAction(namesAction);
+    connect(namesAction, &QAction::triggered, [this]{ showNormalIfMinimized(); });
+    connect(namesAction, &QAction::triggered, this, &BitcoinGUI::gotoNamesPage);
 #endif // ENABLE_WALLET
 
     quitAction = new QAction(tr("E&xit"), this);
@@ -644,6 +653,7 @@ void BitcoinGUI::createMenuBar()
     }
 
     QMenu* use{appMenuBar->addMenu(tr("&Use %1").arg(CLIENT_NAME))};
+    use->addAction(namesAction);
     window_action(use, tr("Timestamp &File"), tr("Prove that a file existed, by publishing its fingerprint on the chain"), m_timestamp_dialog);
     if (walletFrame) {
         use->addSeparator();
@@ -817,6 +827,7 @@ void BitcoinGUI::createToolBars()
         entry(historyAction);
 
         section(tr("Chain"));
+        entry(namesAction);
         entry(sidechainAction);
         window_entry(":/icons/eye", tr("Block Explorer"), tr("Browse blocks and the transactions waiting to be mined"), m_block_explorer);
 
@@ -1136,6 +1147,7 @@ void BitcoinGUI::setWalletActionsEnabled(bool enabled)
     receiveCoinsAction->setEnabled(enabled);
     historyAction->setEnabled(enabled && !isPrivacyModeActivated());
     sidechainAction->setEnabled(enabled);
+    namesAction->setEnabled(enabled);
     encryptWalletAction->setEnabled(enabled);
     backupWalletAction->setEnabled(enabled);
     changePassphraseAction->setEnabled(enabled);
@@ -1302,6 +1314,12 @@ void BitcoinGUI::gotoReceiveCoinsPage()
 {
     receiveCoinsAction->setChecked(true);
     if (walletFrame) walletFrame->gotoReceiveCoinsPage();
+}
+
+void BitcoinGUI::gotoNamesPage()
+{
+    namesAction->setChecked(true);
+    if (walletFrame) walletFrame->gotoNamesPage();
 }
 
 void BitcoinGUI::gotoSidechainPage()

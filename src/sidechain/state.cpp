@@ -190,6 +190,9 @@ bool State::CheckRefund(const RefundRequest& request, std::string& reject_reason
 bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::SidechainParams& params, StateUndo& undo,
                     std::vector<CTxOut>& payouts, std::string& reject_reason)
 {
+    // The names: a transaction that breaks their rules is invalid, so they come first, and change
+    // nothing if it fails.
+    if (!m_bitnames.ApplyTx(tx, height, params.bitnames, undo.bitnames, reject_reason)) return false;
     for (uint32_t n{0}; n < tx.vout.size(); ++n) {
         const CTxOut& out{tx.vout[n]};
         if (IsWithdrawalScript(out.scriptPubKey)) {
@@ -314,6 +317,7 @@ void State::DisconnectBlock(const StateUndo& undo)
     m_main_height = undo.main_height;
     m_bundle = undo.bundle;
     m_last_failure_height = undo.last_failure_height;
+    m_bitnames.Revert(undo.bitnames);
 }
 
 } // namespace sidechain

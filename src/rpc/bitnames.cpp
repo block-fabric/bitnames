@@ -1,0 +1,347 @@
+// Copyright (c) 2026 The Chains developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+//
+// Inspired by BitNames by LayerTwo Labs (plain-bitnames).
+
+#include <bitnames/dns.h>
+#include <bitnames/message.h>
+#include <bitnames/rpcutil.h>
+#include <core_io.h>
+#include <bitnames/state.h>
+#include <coins.h>
+#include <key_io.h>
+#include <node/context.h>
+#include <rpc/server.h>
+#include <rpc/server_util.h>
+#include <rpc/util.h>
+#include <script/solver.h>
+#include <util/strencodings.h>
+#include <validation.h>
+
+#include <univalue.h>
+
+using node::NodeContext;
+
+namespace {
+
+/** Where a name is: the output that carries it, and the address of its owner. */
+UniValue OwnerToJSON(Chainstate& chainstate, const bitnames::State& state, const bitnames::NameHash& name) EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+{
+    UniValue obj(UniValue::VOBJ);
+    for (const auto& [outpoint, token] : state.Tokens()) {
+        if (token.kind != bitnames::Token::Kind::NAME || token.id != name) continue;
+        obj.pushKV("txid", outpoint.hash.GetHex());
+        obj.pushKV("vout", outpoint.n);
+        if (const auto coin{chainstate.CoinsTip().GetCoin(outpoint)}) {
+            CTxDestination dest;
+            if (ExtractDestination(coin->out.scriptPubKey, dest)) obj.pushKV("address", EncodeDestination(dest));
+        }
+        break;
+    }
+    return obj;
+}
+
+UniValue NameToJSON(Chainstate& chainstate, const bitnames::State& state, const bitnames::NameHash& name, const bitnames::NameRecord& record,
+                    std::optional<int> height) EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+{
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("namehash", name.GetHex());
+    if (const std::string text{bitnames::FullText(state, record)}; !text.empty()) obj.pushKV("name", text);
+    if (record.parent) {
+        obj.pushKV("parent", record.parent->GetHex());
+        obj.pushKV("label", record.label);
+    }
+    obj.pushKV("seq", bitnames::FormatSeq(record.seq));
+    obj.pushKV("registered", record.height);
+    obj.pushKV("registration", record.registration.GetHex());
+    if (record.icann) obj.pushKV("icann", record.icann_name);
+    const auto data{height ? record.AtHeight(*height) : std::optional{record.Current()}};
+    if (data) obj.pushKV("data", bitnames::DataToJSON(*data));
+    obj.pushKV("owner", OwnerToJSON(chainstate, state, name));
+    return obj;
+}
+
+std::vector<RPCResult> NameResults()
+{
+    return {
+        {RPCResult::Type::STR_HEX, "namehash", "The hash of the name, by which the chain knows it"},
+        {RPCResult::Type::STR, "name", /*optional=*/true, "The text of the name (blog.core for a subname), if it and its parents are public"},
+        {RPCResult::Type::STR_HEX, "parent", /*optional=*/true, "For a subname: the hash of its parent"},
+        {RPCResult::Type::STR, "label", /*optional=*/true, "For a subname: its label"},
+        {RPCResult::Type::STR, "seq", "Its number, in the order of registration"},
+        {RPCResult::Type::NUM, "registered", "The height of the block that registered it"},
+        {RPCResult::Type::STR_HEX, "registration", "The transaction that registered it"},
+        {RPCResult::Type::STR, "icann", /*optional=*/true, "The ICANN domain name it was marked as"},
+        {RPCResult::Type::OBJ, "data", /*optional=*/true, "Its data; left out at a height before its registration", bitnames::DataResults()},
+        {RPCResult::Type::OBJ, "owner", "The output that carries it",
+        {
+            {RPCResult::Type::STR_HEX, "txid", ""},
+            {RPCResult::Type::NUM, "vout", ""},
+            {RPCResult::Type::STR, "address", /*optional=*/true, "The address of the owner"},
+        }},
+    };
+}
+
+RPCMethod getname()
+{
+    return RPCMethod{
+        "getname",
+        "A registered name: its data, now or at a past height, and its owner.",
+        {
+            {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, the hash of the name (\"0x\" and 64 hex digits), or its number (\"1739-0029\")"},
+            {"height", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "The height to give the data at; now if left out"},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", NameResults()},
+        RPCExamples{HelpExampleCli("getname", "\"satoshi\"") + HelpExampleCli("getname", "\"1739-0029\" 1200")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    ChainstateManager& chainman{EnsureAnyChainman(request.context)};
+    LOCK(::cs_main);
+    Chainstate& chainstate{chainman.ActiveChainstate()};
+    const bitnames::State& state{chainstate.m_scdb.m_side.BitNames()};
+    const bitnames::NameHash name{bitnames::ParseNameArg(request.params[0], &state)};
+    const auto it{state.Names().find(name)};
+    if (it == state.Names().end()) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
+    const std::optional<int> height{request.params[1].isNull() ? std::nullopt : std::optional<int>{request.params[1].getInt<int>()}};
+    return NameToJSON(chainstate, state, name, it->second, height);
+},
+    };
+}
+
+RPCMethod listnames()
+{
+    return RPCMethod{
+        "listnames",
+        "The registered names, in the order of registration.",
+        {
+            {"count", RPCArg::Type::NUM, RPCArg::Default{100}, "How many"},
+            {"skip", RPCArg::Type::NUM, RPCArg::Default{0}, "How many to skip"},
+            {"match", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Only the public names that contain this text"},
+        },
+        RPCResult{RPCResult::Type::ARR, "", "", {{RPCResult::Type::OBJ, "", "", NameResults()}}},
+        RPCExamples{HelpExampleCli("listnames", "10 0")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    ChainstateManager& chainman{EnsureAnyChainman(request.context)};
+    const int count{request.params[0].isNull() ? 100 : request.params[0].getInt<int>()};
+    const int skip{request.params[1].isNull() ? 0 : request.params[1].getInt<int>()};
+    if (count < 0 || skip < 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Negative count or skip");
+    LOCK(::cs_main);
+    Chainstate& chainstate{chainman.ActiveChainstate()};
+    const bitnames::State& state{chainstate.m_scdb.m_side.BitNames()};
+    UniValue result(UniValue::VARR);
+    const std::optional<std::string> match{request.params[2].isNull() ? std::nullopt : std::optional{ToLower(request.params[2].get_str())}};
+    int skipped{0};
+    for (uint32_t seq{0}; seq < state.NextSeq() && result.size() < static_cast<size_t>(count); ++seq) {
+        const auto name{state.NameOfSeq(seq)};
+        if (!name) continue;
+        if (match && ToLower(bitnames::FullText(state, state.Names().at(*name))).find(*match) == std::string::npos) continue;
+        if (skipped++ < skip) continue;
+        result.push_back(NameToJSON(chainstate, state, *name, state.Names().at(*name), std::nullopt));
+    }
+    return result;
+},
+    };
+}
+
+RPCMethod getnamehistory()
+{
+    return RPCMethod{
+        "getnamehistory",
+        "Every value each field of the data of a name has had, with the transaction and height that set it.",
+        {
+            {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, the hash of the name, or its number"},
+        },
+        RPCResult{RPCResult::Type::OBJ_DYN, "", "Per field, oldest first",
+        {
+            {RPCResult::Type::ARR, "field", "", {{RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::ANY, "value", "The value; null where it was deleted"},
+                {RPCResult::Type::STR_HEX, "txid", ""},
+                {RPCResult::Type::NUM, "height", ""},
+            }}}},
+        }},
+        RPCExamples{HelpExampleCli("getnamehistory", "\"satoshi\"")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    ChainstateManager& chainman{EnsureAnyChainman(request.context)};
+    LOCK(::cs_main);
+    const bitnames::State& state{chainman.ActiveChainstate().m_scdb.m_side.BitNames()};
+    const bitnames::NameHash name{bitnames::ParseNameArg(request.params[0], &state)};
+    const auto it{state.Names().find(name)};
+    if (it == state.Names().end()) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
+    const bitnames::NameRecord& record{it->second};
+    UniValue result(UniValue::VOBJ);
+    const auto add{[&](const std::string& field, const auto& history, const auto& format) {
+        UniValue entries(UniValue::VARR);
+        for (const auto& entry : history) {
+            UniValue obj(UniValue::VOBJ);
+            obj.pushKV("value", entry.value ? format(*entry.value) : UniValue{});
+            obj.pushKV("txid", entry.txid.GetHex());
+            obj.pushKV("height", entry.height);
+            entries.push_back(std::move(obj));
+        }
+        result.pushKV(field, std::move(entries));
+    }};
+    add("commitment", record.commitment, [](const uint256& v) { return UniValue{v.GetHex()}; });
+    add("ipv4", record.ipv4, [](const bitnames::SocketV4& v) { return UniValue{bitnames::FormatSocket(v)}; });
+    add("ipv6", record.ipv6, [](const bitnames::SocketV6& v) { return UniValue{bitnames::FormatSocket(v)}; });
+    add("encryptionkey", record.encryption_key, [](const bitnames::EncryptionKey& v) { return UniValue{HexStr(v)}; });
+    add("signingkey", record.signing_key, [](const bitnames::SigningKey& v) { return UniValue{HexStr(v)}; });
+    add("paymailfee", record.paymail_fee, [](const CAmount& v) { return ValueFromAmount(v); });
+    return result;
+},
+    };
+}
+
+RPCMethod getbitnamesinfo()
+{
+    return RPCMethod{
+        "getbitnamesinfo",
+        "How many names are registered and reserved.",
+        {},
+        RPCResult{RPCResult::Type::OBJ, "", "",
+        {
+            {RPCResult::Type::NUM, "names", "Names registered"},
+            {RPCResult::Type::NUM, "reservations", "Reservations not revealed yet"},
+            {RPCResult::Type::BOOL, "icann", "Whether this network has an authority that marks ICANN names"},
+            {RPCResult::Type::STR, "dns", /*optional=*/true, "Where this node answers DNS questions for .x (-dnsbind), if it does"},
+        }},
+        RPCExamples{HelpExampleCli("getbitnamesinfo", "")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    ChainstateManager& chainman{EnsureAnyChainman(request.context)};
+    LOCK(::cs_main);
+    const bitnames::State& state{chainman.ActiveChainstate().m_scdb.m_side.BitNames()};
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("names", uint64_t{state.Names().size()});
+    result.pushKV("reservations", uint64_t{state.Reservations().size()});
+    result.pushKV("icann", !chainman.GetConsensus().sidechain.bitnames.icann_authority.IsNull());
+    if (const auto dns{bitnames::DnsServerAddress()}) result.pushKV("dns", *dns);
+    return result;
+},
+    };
+}
+
+RPCMethod verifynamesignature()
+{
+    return RPCMethod{
+        "verifynamesignature",
+        "Check that the owner of a name signed a message (see signasname), with the signing key the name has now.",
+        {
+            {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, its hash, or its number"},
+            {"message", RPCArg::Type::STR, RPCArg::Optional::NO, "The text"},
+            {"signature", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The signature"},
+        },
+        RPCResult{RPCResult::Type::BOOL, "", "Whether the signature is good"},
+        RPCExamples{HelpExampleCli("verifynamesignature", "\"satoshi\" \"hello\" \"signature\"")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    ChainstateManager& chainman{EnsureAnyChainman(request.context)};
+    LOCK(::cs_main);
+    const bitnames::State& state{chainman.ActiveChainstate().m_scdb.m_side.BitNames()};
+    const bitnames::NameHash name{bitnames::ParseNameArg(request.params[0], &state)};
+    const auto it{state.Names().find(name)};
+    if (it == state.Names().end()) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
+    const auto key{it->second.Current().signing_key};
+    if (!key) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name has no signing key");
+    const std::string text{request.params[1].get_str()};
+    const std::vector<unsigned char> signature{ParseHex(request.params[2].get_str())};
+    if (signature.size() != 64) return false;
+    return XOnlyPubKey{*key}.VerifySchnorr(bitnames::MessageSigHash(std::span{UCharCast(text.data()), text.size()}), signature);
+},
+    };
+}
+
+RPCMethod getnamerecords()
+{
+    return RPCMethod{
+        "getnamerecords",
+        "The DNS records of a name or subname, one row per record (see setnamerecords).",
+        {
+            {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, a subname (blog.core), its hash or its number"},
+        },
+        RPCResult{RPCResult::Type::ARR, "", "", {
+            {RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::STR, "host", "@ for the name itself, or the labels under it (www, a.b, *)"},
+                {RPCResult::Type::STR, "type", "A, AAAA, CNAME, TXT, MX, SRV, NS, TLSA, or DELEGATE (the records of another name stand for this host)"},
+                {RPCResult::Type::STR, "value", ""},
+                {RPCResult::Type::NUM, "priority", /*optional=*/true, "For MX and SRV"},
+                {RPCResult::Type::NUM, "weight", /*optional=*/true, "For SRV"},
+                {RPCResult::Type::NUM, "port", /*optional=*/true, "For SRV"},
+            }},
+        }},
+        RPCExamples{HelpExampleCli("getnamerecords", "\"core\"")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    ChainstateManager& chainman{EnsureAnyChainman(request.context)};
+    LOCK(::cs_main);
+    const bitnames::State& state{chainman.ActiveChainstate().m_scdb.m_side.BitNames()};
+    const auto it{state.Names().find(bitnames::ParseNameArg(request.params[0], &state))};
+    if (it == state.Names().end()) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
+    return bitnames::RowsFromRecords(it->second.Current().records.value_or(""));
+},
+    };
+}
+
+RPCMethod resolvename()
+{
+    return RPCMethod{
+        "resolvename",
+        "What the DNS server of the names (-dnsbind) answers for a domain name under ." + bitnames::DNS_TLD + ".",
+        {
+            {"domain", RPCArg::Type::STR, RPCArg::Optional::NO, "The domain name, such as www.core.x"},
+            {"type", RPCArg::Type::STR, RPCArg::Default{"ANY"}, "The record type: A, AAAA, CNAME, TXT, MX, SRV, TLSA, NS or ANY"},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "",
+        {
+            {RPCResult::Type::STR, "status", "NOERROR, NXDOMAIN (no such name) or REFUSED (not under ." + bitnames::DNS_TLD + ")"},
+            {RPCResult::Type::ARR, "records", "", {{RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::STR, "name", ""},
+                {RPCResult::Type::STR, "type", ""},
+                {RPCResult::Type::STR, "data", ""},
+            }}}},
+        }},
+        RPCExamples{HelpExampleCli("resolvename", "\"www.core.x\" A")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    ChainstateManager& chainman{EnsureAnyChainman(request.context)};
+    const std::string type_name{request.params[1].isNull() ? "ANY" : request.params[1].get_str()};
+    const auto type{bitnames::dns::ParseType(type_name)};
+    if (!type) throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown record type");
+    LOCK(::cs_main);
+    const auto answer{bitnames::Resolve(chainman.ActiveChainstate().m_scdb.m_side.BitNames(), request.params[0].get_str(), *type)};
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("status", answer.rcode == bitnames::dns::NOERROR ? "NOERROR" : answer.rcode == bitnames::dns::NXDOMAIN ? "NXDOMAIN" : "REFUSED");
+    UniValue records(UniValue::VARR);
+    for (const auto& record : answer.records) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("name", record.name);
+        obj.pushKV("type", bitnames::dns::TypeName(record.type));
+        obj.pushKV("data", record.text);
+        records.push_back(std::move(obj));
+    }
+    result.pushKV("records", std::move(records));
+    return result;
+},
+    };
+}
+
+} // namespace
+
+void RegisterBitNamesRPCCommands(CRPCTable& t)
+{
+    static const CRPCCommand commands[]{
+        {"bitnames", &getname},
+        {"bitnames", &listnames},
+        {"bitnames", &getnamehistory},
+        {"bitnames", &getbitnamesinfo},
+        {"bitnames", &verifynamesignature},
+        {"bitnames", &resolvename},
+        {"bitnames", &getnamerecords},
+    };
+    for (const auto& c : commands) t.appendCommand(c.name, &c);
+}

@@ -234,9 +234,8 @@ public:
         };
 
         // This chain is a sidechain of the Chains mainchain.
-        // TODO for a new sidechain: its slot, its own message, magic bytes, port and address prefix.
-        MakeSidechain({.slot = 0, .genesis_message = "Sidechain template, main network", .genesis_time = 1790900000,
-                       .message_start = {0x5c, 0x1d, 0xec, 0x01}, .default_port = 9655, .bech32_hrp = "sc"});
+        MakeSidechain({.slot = 3, .genesis_message = "BitNames: names that point to keys, addresses and data, owned like coins", .genesis_time = 1791216000,
+                       .message_start = {0x62, 0x6e, 0x6d, 0x01}, .default_port = 9955, .bech32_hrp = "bn"});
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -334,8 +333,8 @@ public:
         };
 
         // This chain is a sidechain of the Chains testnet.
-        MakeSidechain({.slot = 0, .genesis_message = "Sidechain template, test network", .genesis_time = 1790900000,
-                       .message_start = {0x5c, 0x1d, 0xec, 0x02}, .default_port = 19655, .bech32_hrp = "tsc"});
+        MakeSidechain({.slot = 3, .genesis_message = "BitNames testnet", .genesis_time = 1791216000,
+                       .message_start = {0x62, 0x6e, 0x6d, 0x02}, .default_port = 19955, .bech32_hrp = "tbn"});
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
@@ -444,8 +443,8 @@ public:
         };
 
         // This chain is a sidechain of the Chains signet. Its own blocks are not signed.
-        MakeSidechain({.slot = 0, .genesis_message = "Sidechain template, signet", .genesis_time = 1790900000,
-                       .message_start = {0x5c, 0x1d, 0xec, 0x03}, .default_port = 39655, .bech32_hrp = "tsc"});
+        MakeSidechain({.slot = 3, .genesis_message = "BitNames signet", .genesis_time = 1791216000,
+                       .message_start = {0x62, 0x6e, 0x6d, 0x03}, .default_port = 39955, .bech32_hrp = "tbn"});
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -493,11 +492,11 @@ public:
         consensus.nMinimumChainWork = uint256{};
         consensus.defaultAssumeValid = uint256{};
 
-        pchMessageStart[0] = 0x5c;
-        pchMessageStart[1] = 0x1d;
-        pchMessageStart[2] = 0xec;
+        pchMessageStart[0] = 0x62;
+        pchMessageStart[1] = 0x6e;
+        pchMessageStart[2] = 0x6d;
         pchMessageStart[3] = 0x04;
-        nDefaultPort = 29655;
+        nDefaultPort = 29955;
         nPruneAfterHeight = opts.fastprune ? 100 : 1000;
 
         // On request this chain is a sidechain, with what tests need to be quick.

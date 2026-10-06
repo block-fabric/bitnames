@@ -5,6 +5,7 @@
 #ifndef BITCOIN_INTERFACES_CHAIN_H
 #define BITCOIN_INTERFACES_CHAIN_H
 
+#include <bitnames/state.h>
 #include <blockfilter.h>
 #include <common/settings.h>
 #include <consensus/amount.h>
@@ -190,6 +191,16 @@ public:
     //! Check if transaction is in mempool.
     virtual bool isInMempool(const Txid& txid) = 0;
 
+    //! BitNames: what an output carries, if it carries a name or a reservation in the chain as it is.
+    virtual std::optional<bitnames::Token> getBitNamesToken(const COutPoint& outpoint) = 0;
+    //! BitNames: a registered name.
+    virtual std::optional<bitnames::NameRecord> getBitName(const bitnames::NameHash& name) = 0;
+    //! BitNames: the output that carries a name, and its script (the owner).
+    virtual std::optional<std::pair<COutPoint, CScript>> getBitNameOwner(const bitnames::NameHash& name) = 0;
+    //! BitNames: the labels of the subnames of a name.
+    virtual std::vector<std::string> getBitNameSubnames(const bitnames::NameHash& parent) = 0;
+    //! BitNames: the parameters of the names, and the height of the next block.
+    virtual std::pair<Consensus::BitNamesParams, int> getBitNamesParams() = 0;
     //! The merged-mining request (BIP301 M8) in the mempool for a sidechain slot, if any: the sidechain
     //! block it asks for, the mainchain block it is for, and the fee it pays.
     struct BmmRequestInfo {

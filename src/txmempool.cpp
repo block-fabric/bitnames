@@ -5,6 +5,8 @@
 
 #include <txmempool.h>
 
+#include <bitnames/state.h>
+
 #include <chain.h>
 #include <coins.h>
 #include <common/system.h>
@@ -249,6 +251,12 @@ void CTxMemPool::addNewTransaction(CTxMemPool::txiter newit)
     for (const CTxOut& out : tx.vout) {
         if (const auto refund{sidechain::ParseRefundScript(out.scriptPubKey)}) m_refunds[refund->withdrawal] = tx.GetHash();
     }
+    if (const auto marker{bitnames::GetMarker(tx)}) {
+        m_bitnames_txs.insert(tx.GetHash());
+        if (marker->operation) {
+            if (const auto* reg{std::get_if<bitnames::Register>(&*marker->operation)}) m_bitnames_registrations[reg->name] = tx.GetHash();
+        }
+    }
     // Don't bother worrying about child transactions of this one.
     // Normal case of a new transaction arriving is that there can't be any
     // children, because such children would be orphans.
@@ -312,6 +320,9 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
                 m_refunds.erase(entry);
             }
         }
+    }
+    if (m_bitnames_txs.erase(it->GetTx().GetHash()) > 0) {
+        std::erase_if(m_bitnames_registrations, [&](const auto& entry) { return entry.second == it->GetTx().GetHash(); });
     }
 
     RemoveUnbroadcastTx(it->GetTx().GetHash(), true /* add logging because unchecked */);

@@ -59,6 +59,19 @@ public:
  */
 static const CRPCConvertParam vRPCConvertParams[] =
 {
+    { "registername", 1, "data" },
+    { "registername", 1, "paymailfee" },
+    { "updatename", 1, "paymailfee" },
+    { "updatename", 1, "data" },
+    { "getname", 1, "height" },
+    { "listnames", 0, "count" },
+    { "listnames", 1, "skip" },
+    { "registername", 2, "public" },
+    { "releasename", 1, "confirm" },
+    { "setnamerecords", 1, "rows" },
+    { "createsubname", 3, "data" },
+    { "createsubname", 3, "paymailfee" },
+    { "sendpaymail", 1, "amount" },
     { "setbmm", 0, "mine" },
     { "setbmm", 2, "always" },
     { "setbmm", 3, "amount" },
