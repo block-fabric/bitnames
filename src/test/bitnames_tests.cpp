@@ -372,8 +372,12 @@ BOOST_AUTO_TEST_CASE(release_takes_subnames)
     }
     params.audit_rules_height = 0;
 
-    // A release cannot keep one of the names it takes.
-    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({core_now, COutPoint{made_post.GetHash(), 0}}, 1, 0, Release{}, 41)}, 5, params, reason));
+    // A release cannot keep one of the names it takes: carrying on the subname (spent first) and
+    // releasing the name it is under.
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({COutPoint{made_post.GetHash(), 0}, core_now}, 1, 0, Release{}, 41)}, 5, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-release-subname-kept");
+    // Carrying on the name and releasing its subname is fine.
+    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({core_now, COutPoint{made_post.GetHash(), 0}}, 1, 0, Release{}, 43)}, 5, params, reason), reason);
 
     const State before{state};
     StateUndo undo;
