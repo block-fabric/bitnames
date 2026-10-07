@@ -339,6 +339,68 @@ BOOST_AUTO_TEST_CASE(subnames)
     BOOST_CHECK(state == before);
 }
 
+BOOST_AUTO_TEST_CASE(release_takes_subnames)
+{
+    // Releasing a name releases its subnames, at any depth, whoever holds them: whoever registers the
+    // name next starts with an empty namespace, and nobody keeps a part of it.
+    Consensus::BitNamesParams params;
+    State state;
+    std::string reason;
+    StateUndo setup;
+    const COutPoint core{Registered(state, "core", {}, 10, params)};
+    RegisterSubname sub;
+    sub.label = "blog";
+    const CMutableTransaction made_blog{Tx({core}, 2, 0, sub, 31)};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{made_blog}, 3, params, setup, reason), reason);
+    const NameHash blog{SubnameHash(HashName("core"), "blog")};
+    // A subname of the subname, held apart (here: the output of its own transaction).
+    sub.label = "post";
+    const CMutableTransaction made_post{Tx({COutPoint{made_blog.GetHash(), 1}}, 2, 0, sub, 32)};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{made_post}, 4, params, setup, reason), reason);
+    const NameHash post{SubnameHash(blog, "post")};
+    const COutPoint core_now{made_blog.GetHash(), 0};
+    BOOST_REQUIRE(state.Names().contains(post));
+
+    // Before the rule's height, the subnames stay (as on the test network until then).
+    params.release_subnames_height = 100;
+    {
+        State old_rules{state};
+        StateUndo undo;
+        BOOST_REQUIRE_MESSAGE(old_rules.ApplyTx(CTransaction{Tx({core_now}, 0, 0, Release{}, 40)}, 5, params, undo, reason), reason);
+        BOOST_CHECK(!old_rules.Names().contains(HashName("core")));
+        BOOST_CHECK(old_rules.Names().contains(blog));
+    }
+    params.release_subnames_height = 0;
+
+    // A release cannot keep one of the names it takes.
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({core_now, COutPoint{made_post.GetHash(), 0}}, 1, 0, Release{}, 41)}, 5, params, reason));
+
+    const State before{state};
+    StateUndo undo;
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({core_now}, 0, 0, Release{}, 42)}, 5, params, undo, reason), reason);
+    BOOST_CHECK(!state.Names().contains(HashName("core")));
+    BOOST_CHECK(!state.Names().contains(blog));
+    BOOST_CHECK(!state.Names().contains(post));
+    // The holders keep their coins, which carry no name any more.
+    for (const auto& [outpoint, token] : state.Tokens()) {
+        BOOST_CHECK(token.id != blog && token.id != post && token.id != HashName("core"));
+    }
+    // The next holder of the name makes the same subname.
+    const COutPoint again{Registered(state, "core", {}, 50, params)};
+    sub.label = "blog";
+    StateUndo next;
+    BOOST_CHECK_MESSAGE(state.ApplyTx(CTransaction{Tx({again}, 2, 0, sub, 51)}, 6, params, next, reason), reason);
+
+    // Undone, all is back as it was.
+    State reverted{state};
+    reverted.Revert(next);
+    State back{before};
+    StateUndo redo;
+    BOOST_REQUIRE(back.ApplyTx(CTransaction{Tx({core_now}, 0, 0, Release{}, 42)}, 5, params, redo, reason));
+    back.Revert(redo);
+    BOOST_CHECK(back == before);
+}
+
 BOOST_AUTO_TEST_CASE(dns_resolution)
 {
     Consensus::BitNamesParams params;

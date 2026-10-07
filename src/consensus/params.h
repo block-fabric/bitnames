@@ -91,6 +91,11 @@ struct BitNamesParams {
      * Null: nobody can.
      */
     uint256 icann_authority;
+    /**
+     * From this height, releasing a name releases its subnames, to any depth, whoever holds them, as
+     * a DNS domain takes its subdomains with it: whoever registers the name next starts with none.
+     */
+    int release_subnames_height{0};
 };
 
 /**

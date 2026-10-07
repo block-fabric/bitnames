@@ -337,6 +337,8 @@ public:
                        .message_start = {0x62, 0x6e, 0x6d, 0x02}, .default_port = 19955, .bech32_hrp = "tbn"});
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
+        // Releasing a name released only it until then; see BitNamesParams.
+        consensus.sidechain.bitnames.release_subnames_height = 1'000'000;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };

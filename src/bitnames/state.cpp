@@ -567,6 +567,27 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             if (it == m_names.end()) return invalid("bad-bn-name-unknown");
             plan.names_released.push_back(names_in[i]);
         }
+        if (height >= params.release_subnames_height) {
+            // The subnames of the released names, at any depth, go with them; their holders keep the
+            // coins, which no longer carry a name.
+            std::set<NameHash> gone{plan.names_released.begin(), plan.names_released.end()};
+            for (bool grew{true}; grew;) {
+                grew = false;
+                for (const auto& [hash, record] : m_names) {
+                    if (record.parent && gone.contains(*record.parent) && gone.insert(hash).second) {
+                        plan.names_released.push_back(hash);
+                        grew = true;
+                    }
+                }
+            }
+            for (size_t i{0}; i < bo; ++i) {
+                if (gone.contains(names_in[i])) return invalid("bad-bn-release-subname-kept");
+            }
+            const std::set<COutPoint> spent_here{plan.spent.begin(), plan.spent.end()};
+            for (const auto& [outpoint, token] : m_tokens) {
+                if (token.kind == Token::Kind::NAME && gone.contains(token.id) && !spent_here.contains(outpoint)) plan.spent.push_back(outpoint);
+            }
+        }
         for (size_t i{ro}; i < ri; ++i) plan.reservations_released.push_back(Txid::FromUint256(reservations_in[i].id));
         names_out.resize(bo);
         reservations_out.resize(ro);
