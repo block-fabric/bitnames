@@ -97,3 +97,32 @@ database taken beforehand, which the in-place rollback must give back exactly.
 
 The mainchain targets `drivechain_messages` and `drivechain_scdb` are here too
 (`src/test/fuzz/drivechain.cpp`).
+
+## BitNames
+
+`src/test/bitnames_tests.cpp`:
+
+| Test | What it checks |
+|---|---|
+| `seq_display` | Name numbers show as BitNames shows them. |
+| `marker_roundtrip`, `old_markers_still_parse` | Markers read back what built them; markers written before records existed still parse. |
+| `names_move_and_cannot_be_destroyed` | A name moves with its coin, and a transaction that would drop it is refused. |
+| `one_registration_of_a_name_per_block` | Two registrations of one name in one block: the second is refused. |
+| `updates_keep_their_history` | Changing a name's data keeps the earlier values. |
+| `icann_names` | ICANN names follow their rules. |
+| `release` | A released name can be registered again, from empty. |
+| `subnames` | Subnames are made by the holder of the level above. |
+| `release_takes_subnames` | Releasing a name releases its subnames at any depth, whoever holds them. |
+| `squatted_subname_gives_way` | A name registered by the raw hash of a subname is a squat, and gives way to the real subname. |
+| `oldest_reservation_reveals` | A copy of someone's reservation, made to register their name first, is younger and refused. |
+| `numbers_after_register_and_release_in_one_block` | A name registered and released in one block, undone, does not bring its number back. |
+| `dns_resolution` | DNS answers from a name's fields and records: aliases, wildcards, delegation, MX, TLSA. Subnames on the chain come before the map; names outside `.x` are refused. |
+
+`feature_bitnames.py`:
+
+- reserve, register, take once, update with history, give away;
+- refuse spends that drop a name;
+- messages to and from owners;
+- DNS records and the `.x` DNS server;
+- subnames and their hosts, deeper subnames;
+- releases, and undoing blocks.
