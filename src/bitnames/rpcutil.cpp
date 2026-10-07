@@ -209,7 +209,7 @@ Node& NodeFor(Node& root, const std::string& host)
 int64_t Number(const UniValue& row, const char* key, int64_t fallback)
 {
     if (!row.exists(key) || row[key].isNull()) return fallback;
-    return row[key].isNum() ? row[key].getInt<int64_t>() : ToIntegral<int64_t>(row[key].get_str()).value_or(fallback);
+    return ToIntegral<int64_t>(row[key].isNum() ? row[key].getValStr() : row[key].get_str()).value_or(fallback);
 }
 
 void RowsOf(const UniValue& node, const std::string& host, UniValue& rows)
@@ -239,17 +239,27 @@ void RowsOf(const UniValue& node, const std::string& host, UniValue& rows)
     for (const UniValue& v : many("mx")) {
         std::optional<int64_t> pref;
         std::string host_name;
+        bool bad{false};
         for (const UniValue& part : v.isArray() ? v.getValues() : std::vector<UniValue>{v}) {
-            if (part.isNum()) pref = part.getInt<int64_t>();
+            if (part.isNum()) {
+                pref = ToIntegral<int64_t>(part.getValStr());
+                bad |= !pref;
+            }
             if (part.isStr()) host_name = part.get_str();
         }
-        add("MX", host_name, pref.value_or(10));
+        if (!bad) add("MX", host_name, pref.value_or(10));
     }
+    // Numbers of records are anyone's JSON: one that is not a whole number leaves its record out.
+    const auto whole{[](const UniValue& v, size_t i) { return v[i].isNum() ? ToIntegral<int64_t>(v[i].getValStr()) : std::nullopt; }};
     for (const UniValue& v : many("srv")) {
-        if (v.isArray() && v.size() == 4 && v[3].isStr()) add("SRV", v[3].get_str(), v[0].getInt<int64_t>(), v[1].getInt<int64_t>(), v[2].getInt<int64_t>());
+        if (!v.isArray() || v.size() != 4 || !v[3].isStr()) continue;
+        const auto a{whole(v, 0)}, b{whole(v, 1)}, c{whole(v, 2)};
+        if (a && b && c) add("SRV", v[3].get_str(), *a, *b, *c);
     }
     for (const UniValue& v : many("tls")) {
-        if (v.isArray() && v.size() == 4 && v[3].isStr()) add("TLSA", strprintf("%d %d %d %s", v[0].getInt<int64_t>(), v[1].getInt<int64_t>(), v[2].getInt<int64_t>(), v[3].get_str()));
+        if (!v.isArray() || v.size() != 4 || !v[3].isStr()) continue;
+        const auto a{whole(v, 0)}, b{whole(v, 1)}, c{whole(v, 2)};
+        if (a && b && c) add("TLSA", strprintf("%d %d %d %s", *a, *b, *c, v[3].get_str()));
     }
     if (node.exists("map") && node["map"].isObject()) {
         const UniValue& map{node["map"]};

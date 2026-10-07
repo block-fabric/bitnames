@@ -133,6 +133,19 @@ private:
 };
 
 /** The records of a node of the records of a name (the name itself, or a subdomain), of a type. */
+
+/**
+ * A whole number of a record, or nothing. Records are anyone's JSON: a number that is not a plain
+ * integer in range (1.5, 1e3, 99999999999999999999) makes the record unusable, never an exception --
+ * thrown in the server's thread it stopped the node, for anyone who published such a record and
+ * asked for it.
+ */
+std::optional<int64_t> WholeNumber(const UniValue& v)
+{
+    if (!v.isNum()) return std::nullopt;
+    return ToIntegral<int64_t>(v.getValStr());
+}
+
 void Collect(const UniValue& node, uint16_t qtype, Collector& out)
 {
     const auto want{[&](uint16_t type) { return qtype == type || qtype == ANY; }};
@@ -187,11 +200,15 @@ void Collect(const UniValue& node, uint16_t qtype, Collector& out)
         for (const UniValue& mx : Many(node, "mx")) {
             std::optional<int64_t> preference;
             std::optional<std::string> host;
+            bool bad{false};
             for (const UniValue& part : mx.isArray() ? mx.getValues() : std::vector<UniValue>{mx}) {
-                if (part.isNum()) preference = part.getInt<int64_t>();
+                if (part.isNum()) {
+                    preference = WholeNumber(part);
+                    bad |= !preference;
+                }
                 if (part.isStr()) host = part.get_str();
             }
-            if (!host) continue;
+            if (!host || bad) continue;
             const uint16_t pref{static_cast<uint16_t>(std::clamp<int64_t>(preference.value_or(10), 0, 65535))};
             std::vector<unsigned char> prefix;
             PutU16(prefix, pref);
@@ -202,10 +219,12 @@ void Collect(const UniValue& node, uint16_t qtype, Collector& out)
         // [priority, weight, port, target]
         for (const UniValue& srv : Many(node, "srv")) {
             if (!srv.isArray() || srv.size() != 4 || !srv[0].isNum() || !srv[1].isNum() || !srv[2].isNum() || !srv[3].isStr()) continue;
+            const std::optional<int64_t> n[3]{WholeNumber(srv[0]), WholeNumber(srv[1]), WholeNumber(srv[2])};
+            if (!n[0] || !n[1] || !n[2]) continue;
             std::vector<unsigned char> prefix;
             uint16_t v[3];
             for (int i{0}; i < 3; ++i) {
-                v[i] = static_cast<uint16_t>(std::clamp<int64_t>(srv[i].getInt<int64_t>(), 0, 65535));
+                v[i] = static_cast<uint16_t>(std::clamp<int64_t>(*n[i], 0, 65535));
                 PutU16(prefix, v[i]);
             }
             out.AddName(SRV, srv[3].get_str(), prefix, strprintf("%u %u %u ", v[0], v[1], v[2]));
@@ -215,12 +234,14 @@ void Collect(const UniValue& node, uint16_t qtype, Collector& out)
         // [usage, selector, matching type, data in hex]
         for (const UniValue& tls : Many(node, "tls")) {
             if (!tls.isArray() || tls.size() != 4 || !tls[0].isNum() || !tls[1].isNum() || !tls[2].isNum() || !tls[3].isStr()) continue;
+            const std::optional<int64_t> n[3]{WholeNumber(tls[0]), WholeNumber(tls[1]), WholeNumber(tls[2])};
+            if (!n[0] || !n[1] || !n[2]) continue;
             const auto data{TryParseHex<unsigned char>(tls[3].get_str())};
             if (!data) continue;
             std::vector<unsigned char> rdata;
-            for (int i{0}; i < 3; ++i) rdata.push_back(static_cast<unsigned char>(std::clamp<int64_t>(tls[i].getInt<int64_t>(), 0, 255)));
+            for (int i{0}; i < 3; ++i) rdata.push_back(static_cast<unsigned char>(std::clamp<int64_t>(*n[i], 0, 255)));
             rdata.insert(rdata.end(), data->begin(), data->end());
-            out.Add(TLSA, std::move(rdata), strprintf("%d %d %d %s", tls[0].getInt<int64_t>(), tls[1].getInt<int64_t>(), tls[2].getInt<int64_t>(), tls[3].get_str()));
+            out.Add(TLSA, std::move(rdata), strprintf("%d %d %d %s", *n[0], *n[1], *n[2], tls[3].get_str()));
         }
     }
 }
@@ -475,8 +496,17 @@ private:
     {
         std::vector<unsigned char> buffer(4096);
         const auto resolve{[&chainman](const std::string& qname, uint16_t qtype) {
-            LOCK(::cs_main);
-            return Resolve(chainman.ActiveChainstate().SideState().BitNames(), qname, qtype);
+            // Nothing a question or a record holds may stop the node: whatever goes wrong is a
+            // failure of this answer only.
+            try {
+                LOCK(::cs_main);
+                return Resolve(chainman.ActiveChainstate().SideState().BitNames(), qname, qtype);
+            } catch (const std::exception& e) {
+                LogWarning("BitNames DNS: no answer for %s: %s", qname, e.what());
+                dns::Answer failed;
+                failed.rcode = dns::SERVFAIL;
+                return failed;
+            }
         }};
         while (!m_stop) {
             sockaddr_storage from;

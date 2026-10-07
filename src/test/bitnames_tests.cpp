@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <bitnames/dns.h>
+#include <bitnames/rpcutil.h>
 #include <bitnames/state.h>
 #include <key.h>
 #include <script/script.h>
@@ -610,6 +611,26 @@ BOOST_AUTO_TEST_CASE(numbers_after_register_and_release_in_one_block)
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({COutPoint{made.GetHash(), 0}}, 0, 0, Release{}, 51)}, 5, params, block, reason), reason);
     state.Revert(block);
     BOOST_CHECK(state == before);
+}
+
+BOOST_AUTO_TEST_CASE(dns_numbers_that_are_not_whole)
+{
+    // Records are anyone's JSON. A number that is not a plain integer (1.5, 1e3, too large) threw in
+    // the DNS server's thread, which stopped the node, for anyone who published it and asked.
+    Consensus::BitNamesParams params;
+    TState state;
+    NameData evil;
+    evil.records = R"({"mx": [[1.5, "m"], [20, "good"]], "srv": [[1e3, 0, 0, "t"], [1, 2, 3, "ok"]],
+                       "tls": [[1.5, 0, 0, "ab"], [99999999999999999999, 0, 0, "ab"]]})";
+    Registered(state, "evil", evil, 10, params);
+    BOOST_CHECK((Texts(Resolve(state, "evil.x", dns::MX)) == std::vector<std::string>{"MX 20 good.evil.x."}));
+    BOOST_CHECK_EQUAL(Resolve(state, "evil.x", dns::SRV).records.size(), 1U);
+    BOOST_CHECK(Resolve(state, "evil.x", dns::TLSA).records.empty());
+    BOOST_CHECK_NO_THROW(Resolve(state, "evil.x", dns::ANY));
+    // The rows the RPC shows: the same records left out, no error.
+    UniValue rows;
+    BOOST_CHECK_NO_THROW(rows = RowsFromRecords(*evil.records));
+    BOOST_CHECK_EQUAL(rows.size(), 2U);
 }
 
 BOOST_AUTO_TEST_CASE(dns_resolution)
