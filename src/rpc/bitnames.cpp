@@ -134,10 +134,11 @@ RPCMethod listnames()
     int skipped{0};
     for (uint32_t seq{0}; seq < state.NextSeq() && result.size() < static_cast<size_t>(count); ++seq) {
         const auto name{state.NameOfSeq(seq)};
-        if (!name) continue;
-        if (match && ToLower(bitnames::FullText(state, *state.GetName(*name))).find(*match) == std::string::npos) continue;
+        const auto record{name ? state.GetName(*name) : std::nullopt};
+        if (!record) continue;
+        if (match && ToLower(bitnames::FullText(state, *record)).find(*match) == std::string::npos) continue;
         if (skipped++ < skip) continue;
-        result.push_back(NameToJSON(chainstate, state, *name, *state.GetName(*name), std::nullopt));
+        result.push_back(NameToJSON(chainstate, state, *name, *record, std::nullopt));
     }
     return result;
 },

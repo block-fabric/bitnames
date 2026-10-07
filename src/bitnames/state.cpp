@@ -723,7 +723,12 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             }
             if (!orphans.empty()) {
                 plan.names_released.insert(plan.names_released.end(), orphans.begin(), orphans.end());
-                ReleaseDescendants(plan, orphans);
+                const std::set<NameHash> gone{ReleaseDescendants(plan, orphans)};
+                // None of them carried on: an output would carry a name that is no more, and control
+                // it again once someone registers it anew.
+                for (const NameHash& name : names_in) {
+                    if (gone.contains(name)) return invalid("bad-bn-released-name-kept");
+                }
             }
         }
     } else if (const auto* update{op ? std::get_if<UpdateName>(op) : nullptr}) {
@@ -786,7 +791,12 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             // whatever was made under it; a real subname of that label is taken.
             if (taken->parent || height < params.audit_rules_height) return invalid("bad-bn-name-taken");
             plan.names_replaced.push_back(child);
-            ReleaseDescendants(plan, {child});
+            const std::set<NameHash> gone{ReleaseDescendants(plan, {child})};
+            // Neither the squat nor anything under it carried on: the subname would be on two outputs,
+            // or an output would carry a name that is no more.
+            for (const NameHash& name : names_in) {
+                if (gone.contains(name)) return invalid("bad-bn-released-name-kept");
+            }
         }
         names_out.push_back(child);
         NameRecord record;

@@ -517,6 +517,11 @@ BOOST_AUTO_TEST_CASE(squatted_subname_gives_way)
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({core}, 2, 0, sub, 92)}, 5, params, reason));
     BOOST_CHECK_EQUAL(reason, "bad-bn-name-taken");
     params.audit_rules_height = 0;
+    // The squatter, holding the parent too, cannot keep the squat's coin: the subname would be on two
+    // outputs, one of which could be sold while the other still updates or releases it.
+    const COutPoint squat_coin{squat.GetHash(), 0};
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({squat_coin, core}, 3, 0, sub, 93)}, 5, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-released-name-kept");
     const TState before{state};
     TUndo made;
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({core}, 2, 0, sub, 92)}, 5, params, made, reason), reason);
@@ -526,6 +531,38 @@ BOOST_AUTO_TEST_CASE(squatted_subname_gives_way)
     BOOST_CHECK(!state.Tokens().contains(COutPoint{squat.GetHash(), 0}));
     state.Revert(made);
     BOOST_CHECK(state == before);
+}
+
+BOOST_AUTO_TEST_CASE(orphans_swept_are_not_kept)
+{
+    // Subnames left by a release before the rules sweep away when the name is registered anew; the
+    // registration cannot carry one of them on, or its coin would control the subname again once the
+    // new holder makes it.
+    Consensus::BitNamesParams params;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    const COutPoint core{Registered(state, "core", {}, 10, params)};
+    RegisterSubname sub;
+    sub.label = "blog";
+    const CMutableTransaction made_blog{Tx({core}, 2, 0, sub, 20)};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{made_blog}, 3, params, undo, reason), reason);
+    const COutPoint blog_coin{made_blog.GetHash(), 1};
+    params.audit_rules_height = 100;
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({COutPoint{made_blog.GetHash(), 0}}, 0, 0, Release{}, 21)}, 4, params, undo, reason), reason);
+    BOOST_REQUIRE(state.Names().contains(SubnameHash(HashName("core"), "blog")));
+    params.audit_rules_height = 0;
+    // Registered again, with the orphan's coin among the inputs and carried on.
+    const NameHash name{HashName("core")};
+    const CMutableTransaction reserve{Tx({}, 0, 1, Reserve{ReservationCommitment(name, uint256{5})}, 22)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 5, params, undo, reason));
+    const COutPoint reservation{reserve.GetHash(), 0};
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({reservation, blog_coin}, 2, 0, Register{name, uint256{5}, {}}, 23)}, 6, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-released-name-kept");
+    // Without it, the registration sweeps the orphan, and its coin carries no name.
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({reservation}, 1, 0, Register{name, uint256{5}, {}}, 24)}, 6, params, undo, reason), reason);
+    BOOST_CHECK(!state.Names().contains(SubnameHash(HashName("core"), "blog")));
+    BOOST_CHECK(!state.Tokens().contains(blog_coin));
 }
 
 BOOST_AUTO_TEST_CASE(oldest_reservation_reveals)

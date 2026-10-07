@@ -15,6 +15,7 @@ add_executable(fuzz
   bech32.cpp
   bip324.cpp
   bitdeque.cpp
+  bitnames.cpp
   bitset.cpp
   block.cpp
   block_header.cpp

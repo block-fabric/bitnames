@@ -97,6 +97,7 @@ struct BitNamesParams {
      *   its subdomains with it: whoever registers the name next starts with none (and so does a name
      *   registered over subnames an earlier holder left);
      * - a top-level name registered by the hash of a subname (a squat) gives way to that subname;
+     * - a transaction carries on no name it releases, in any of these ways;
      * - a reservation is revealed only if no older one has the same commitment: a copy of someone
      *   else's, made to register the name first once they reveal it, never is.
      */
