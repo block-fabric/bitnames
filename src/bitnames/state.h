@@ -12,10 +12,12 @@
 #include <primitives/transaction.h>
 #include <script/script.h>
 #include <serialize.h>
+#include <sidechain/store.h>
 #include <uint256.h>
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -378,103 +380,52 @@ void ReadChanges(Stream& s, std::vector<std::pair<Key, std::optional<Value>>>& c
 }
 } // namespace detail
 
-/** What a block changed in the State: the earlier value of every entry it changed, nullopt where it added one. */
-struct StateUndo {
-    //! The number the next name would have had before the block, once the block changed anything.
-    std::optional<uint32_t> next_seq;
-    //! Every change, with the value it replaced; reverted in reverse order.
-    std::vector<std::pair<COutPoint, std::optional<Token>>> tokens;
-    std::vector<std::pair<NameHash, std::optional<NameRecord>>> names;
-    std::vector<std::pair<Txid, std::optional<uint256>>> reservations;
-    //! Numbers of released names, to give back to them.
-    std::vector<std::pair<uint32_t, NameHash>> seqs;
-    //! The order of reservations (State::m_reservation_order) the block changed, and the next one.
-    std::vector<std::pair<Txid, std::optional<uint64_t>>> reservation_orders;
-    std::optional<uint64_t> next_reservation_order;
-
-    bool empty() const { return !next_seq && tokens.empty() && names.empty() && reservations.empty() && seqs.empty() && reservation_orders.empty() && !next_reservation_order; }
-
-    template <typename Stream>
-    void Serialize(Stream& s) const
-    {
-        // The format from the audit's rules on: a first byte of 2, where the older format has the
-        // flag of next_seq (0 or 1). The undo data is followed by more in its record, so the end of
-        // the stream cannot tell the formats apart.
-        s << uint8_t{2};
-        s << BN_OPT(next_seq);
-        detail::WriteChanges(s, tokens);
-        detail::WriteChanges(s, names);
-        detail::WriteChanges(s, reservations);
-        s << seqs;
-        detail::WriteChanges(s, reservation_orders);
-        s << BN_OPT(next_reservation_order);
-    }
-    template <typename Stream>
-    void Unserialize(Stream& s)
-    {
-        uint8_t first;
-        s >> first;
-        const bool with_orders{first == 2};
-        next_seq.reset();
-        if (with_orders) {
-            s >> BN_OPT(next_seq);
-        } else if (first != 0) {
-            s >> next_seq.emplace();
-        }
-        detail::ReadChanges(s, tokens);
-        detail::ReadChanges(s, names);
-        detail::ReadChanges(s, reservations);
-        s >> seqs;
-        // Undo data written before reservations had an order has none.
-        reservation_orders.clear();
-        next_reservation_order.reset();
-        if (!with_orders) return;
-        detail::ReadChanges(s, reservation_orders);
-        s >> BN_OPT(next_reservation_order);
-    }
-};
-
+/**
+ * The names, on the store of the sidechain state (sidechain/store.h), one entry per key, so that
+ * nothing the size of the registry is ever read, copied or written whole. Tables (the first byte of
+ * the keys): 0x20 what outputs carry, 0x21 names, 0x22 reservations not revealed yet, 0x23 names by
+ * number, 0x24 the order of reservations; single values 0x25 the next number, 0x26 the next order,
+ * 0x2a and 0x2b how many names and reservations there are. Indexes, so that no rule reads a table
+ * whole: 0x27 names by parent, 0x28 outputs by the name they carry, 0x29 reservations by commitment
+ * then order.
+ *
+ * What a block changes, the store's journal notes: the undo data of the block.
+ */
 class State
 {
 public:
+    /** Read only. */
+    explicit State(const sidechain::StoreView& view) : m_view{&view}, m_overlay{nullptr} {}
+    /** Read and write. */
+    explicit State(sidechain::StoreOverlay& overlay) : m_view{&overlay}, m_overlay{&overlay} {}
+
     /**
      * Check a transaction against the state and, if it follows the rules, apply it: record what
-     * its outputs carry and what it does to names, noting the earlier values in `undo`. A
-     * transaction that does not follow the rules changes nothing.
+     * its outputs carry and what it does to names. A transaction that does not follow the rules
+     * changes nothing.
      */
-    [[nodiscard]] bool ApplyTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, StateUndo& undo, std::string& reject_reason);
+    [[nodiscard]] bool ApplyTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason);
     /** Whether ApplyTx would accept the transaction now. */
     [[nodiscard]] bool CheckTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason) const;
     /** What the inputs of a transaction carry that this state knows of, in the order of the inputs. */
     std::vector<std::pair<uint32_t, Token>> SpentTokens(const CTransaction& tx) const;
 
-    /** Undo what a block did, from what ApplyTx noted for it. */
-    void Revert(const StateUndo& undo);
-
-    const std::map<COutPoint, Token>& Tokens() const { return m_tokens; }
-    const std::map<NameHash, NameRecord>& Names() const { return m_names; }
-    const std::map<Txid, uint256>& Reservations() const { return m_reservations; }
+    std::optional<Token> GetToken(const COutPoint& outpoint) const;
+    std::optional<NameRecord> GetName(const NameHash& name) const;
+    bool HasName(const NameHash& name) const;
+    std::optional<uint256> GetReservation(const Txid& id) const;
     std::optional<NameHash> NameOfSeq(uint32_t seq) const;
-    uint32_t NextSeq() const { return m_next_seq; }
-
-    template <typename Stream>
-    void Serialize(Stream& s) const
-    {
-        s << m_tokens << m_names << m_reservations << m_seq << m_next_seq << m_reservation_order << m_next_reservation_order;
-    }
-    template <typename Stream>
-    void Unserialize(Stream& s)
-    {
-        s >> m_tokens >> m_names >> m_reservations >> m_seq >> m_next_seq;
-        // A state written before reservations had an order ends here: theirs count as the oldest.
-        m_reservation_order.clear();
-        m_next_reservation_order = 1;
-        if constexpr (requires { s.empty(); }) {
-            if (s.empty()) return;
-        }
-        s >> m_reservation_order >> m_next_reservation_order;
-    }
-    friend bool operator==(const State&, const State&) = default;
+    uint32_t NextSeq() const;
+    uint64_t NameCount() const;
+    uint64_t ReservationCount() const;
+    /** Every name, by hash, until `fn` returns false. */
+    void ForEachName(const std::function<bool(const NameHash&, const NameRecord&)>& fn) const;
+    /** Every output that carries something, by outpoint, until `fn` returns false. */
+    void ForEachToken(const std::function<bool(const COutPoint&, const Token&)>& fn) const;
+    /** The outputs that carry `name`. */
+    std::vector<COutPoint> TokensOf(const NameHash& name) const;
+    /** The subnames of `parent`, by hash. */
+    std::vector<NameHash> ChildrenOf(const NameHash& parent) const;
 
 private:
     struct Plan;
@@ -482,18 +433,17 @@ private:
     std::optional<Plan> MakePlan(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason) const;
     /** Add the descendants of `roots` to the names a plan releases, and the tokens of `roots` and of them to what it spends. @return roots and descendants */
     std::set<NameHash> ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const;
+    std::optional<uint64_t> OrderOf(const Txid& id) const;
 
-    //! What outputs carry names and reservations.
-    std::map<COutPoint, Token> m_tokens;
-    std::map<NameHash, NameRecord> m_names;
-    //! Reservations not revealed yet, by the transaction that made them.
-    std::map<Txid, uint256> m_reservations;
-    //! Names by their number.
-    std::map<uint32_t, NameHash> m_seq;
-    uint32_t m_next_seq{0};
-    //! The order in which reservations were made (from audit_rules_height; older ones count as 0).
-    std::map<Txid, uint64_t> m_reservation_order;
-    uint64_t m_next_reservation_order{1};
+    // Writes, with the indexes kept in step.
+    sidechain::StoreOverlay& Writable() const;
+    void SetToken(const COutPoint& outpoint, const std::optional<Token>& token);
+    void SetName(const NameHash& name, const std::optional<NameRecord>& record);
+    void SetReservation(const Txid& id, const std::optional<uint256>& commitment);
+    void SetOrder(const Txid& id, const std::optional<uint64_t>& order);
+
+    const sidechain::StoreView* m_view;
+    sidechain::StoreOverlay* m_overlay;
 };
 
 /** Whether the marker of a transaction, if any, is well formed. This depends on the transaction alone. */

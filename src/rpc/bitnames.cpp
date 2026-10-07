@@ -29,8 +29,7 @@ namespace {
 UniValue OwnerToJSON(Chainstate& chainstate, const bitnames::State& state, const bitnames::NameHash& name) EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
 {
     UniValue obj(UniValue::VOBJ);
-    for (const auto& [outpoint, token] : state.Tokens()) {
-        if (token.kind != bitnames::Token::Kind::NAME || token.id != name) continue;
+    for (const COutPoint& outpoint : state.TokensOf(name)) {
         obj.pushKV("txid", outpoint.hash.GetHex());
         obj.pushKV("vout", outpoint.n);
         if (const auto coin{chainstate.CoinsTip().GetCoin(outpoint)}) {
@@ -99,12 +98,12 @@ RPCMethod getname()
     ChainstateManager& chainman{EnsureAnyChainman(request.context)};
     LOCK(::cs_main);
     Chainstate& chainstate{chainman.ActiveChainstate()};
-    const bitnames::State& state{chainstate.m_scdb.m_side.BitNames()};
+    const bitnames::State state{chainstate.SideState().BitNames()};
     const bitnames::NameHash name{bitnames::ParseNameArg(request.params[0], &state)};
-    const auto it{state.Names().find(name)};
-    if (it == state.Names().end()) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
+    const auto found{state.GetName(name)};
+    if (!found) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
     const std::optional<int> height{request.params[1].isNull() ? std::nullopt : std::optional<int>{request.params[1].getInt<int>()}};
-    return NameToJSON(chainstate, state, name, it->second, height);
+    return NameToJSON(chainstate, state, name, *found, height);
 },
     };
 }
@@ -129,16 +128,16 @@ RPCMethod listnames()
     if (count < 0 || skip < 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Negative count or skip");
     LOCK(::cs_main);
     Chainstate& chainstate{chainman.ActiveChainstate()};
-    const bitnames::State& state{chainstate.m_scdb.m_side.BitNames()};
+    const bitnames::State state{chainstate.SideState().BitNames()};
     UniValue result(UniValue::VARR);
     const std::optional<std::string> match{request.params[2].isNull() ? std::nullopt : std::optional{ToLower(request.params[2].get_str())}};
     int skipped{0};
     for (uint32_t seq{0}; seq < state.NextSeq() && result.size() < static_cast<size_t>(count); ++seq) {
         const auto name{state.NameOfSeq(seq)};
         if (!name) continue;
-        if (match && ToLower(bitnames::FullText(state, state.Names().at(*name))).find(*match) == std::string::npos) continue;
+        if (match && ToLower(bitnames::FullText(state, *state.GetName(*name))).find(*match) == std::string::npos) continue;
         if (skipped++ < skip) continue;
-        result.push_back(NameToJSON(chainstate, state, *name, state.Names().at(*name), std::nullopt));
+        result.push_back(NameToJSON(chainstate, state, *name, *state.GetName(*name), std::nullopt));
     }
     return result;
 },
@@ -167,11 +166,11 @@ RPCMethod getnamehistory()
 {
     ChainstateManager& chainman{EnsureAnyChainman(request.context)};
     LOCK(::cs_main);
-    const bitnames::State& state{chainman.ActiveChainstate().m_scdb.m_side.BitNames()};
+    const bitnames::State state{chainman.ActiveChainstate().SideState().BitNames()};
     const bitnames::NameHash name{bitnames::ParseNameArg(request.params[0], &state)};
-    const auto it{state.Names().find(name)};
-    if (it == state.Names().end()) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
-    const bitnames::NameRecord& record{it->second};
+    const auto found{state.GetName(name)};
+    if (!found) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
+    const bitnames::NameRecord record{*found};
     UniValue result(UniValue::VOBJ);
     const auto add{[&](const std::string& field, const auto& history, const auto& format) {
         UniValue entries(UniValue::VARR);
@@ -213,10 +212,10 @@ RPCMethod getbitnamesinfo()
 {
     ChainstateManager& chainman{EnsureAnyChainman(request.context)};
     LOCK(::cs_main);
-    const bitnames::State& state{chainman.ActiveChainstate().m_scdb.m_side.BitNames()};
+    const bitnames::State state{chainman.ActiveChainstate().SideState().BitNames()};
     UniValue result(UniValue::VOBJ);
-    result.pushKV("names", uint64_t{state.Names().size()});
-    result.pushKV("reservations", uint64_t{state.Reservations().size()});
+    result.pushKV("names", state.NameCount());
+    result.pushKV("reservations", state.ReservationCount());
     result.pushKV("icann", !chainman.GetConsensus().sidechain.bitnames.icann_authority.IsNull());
     if (const auto dns{bitnames::DnsServerAddress()}) result.pushKV("dns", *dns);
     return result;
@@ -240,11 +239,11 @@ RPCMethod verifynamesignature()
 {
     ChainstateManager& chainman{EnsureAnyChainman(request.context)};
     LOCK(::cs_main);
-    const bitnames::State& state{chainman.ActiveChainstate().m_scdb.m_side.BitNames()};
+    const bitnames::State state{chainman.ActiveChainstate().SideState().BitNames()};
     const bitnames::NameHash name{bitnames::ParseNameArg(request.params[0], &state)};
-    const auto it{state.Names().find(name)};
-    if (it == state.Names().end()) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
-    const auto key{it->second.Current().signing_key};
+    const auto found{state.GetName(name)};
+    if (!found) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
+    const auto key{found->Current().signing_key};
     if (!key) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name has no signing key");
     const std::string text{request.params[1].get_str()};
     const std::vector<unsigned char> signature{ParseHex(request.params[2].get_str())};
@@ -278,10 +277,10 @@ RPCMethod getnamerecords()
 {
     ChainstateManager& chainman{EnsureAnyChainman(request.context)};
     LOCK(::cs_main);
-    const bitnames::State& state{chainman.ActiveChainstate().m_scdb.m_side.BitNames()};
-    const auto it{state.Names().find(bitnames::ParseNameArg(request.params[0], &state))};
-    if (it == state.Names().end()) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
-    return bitnames::RowsFromRecords(it->second.Current().records.value_or(""));
+    const bitnames::State state{chainman.ActiveChainstate().SideState().BitNames()};
+    const auto found{state.GetName(bitnames::ParseNameArg(request.params[0], &state))};
+    if (!found) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
+    return bitnames::RowsFromRecords(found->Current().records.value_or(""));
 },
     };
 }
@@ -313,7 +312,7 @@ RPCMethod resolvename()
     const auto type{bitnames::dns::ParseType(type_name)};
     if (!type) throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown record type");
     LOCK(::cs_main);
-    const auto answer{bitnames::Resolve(chainman.ActiveChainstate().m_scdb.m_side.BitNames(), request.params[0].get_str(), *type)};
+    const auto answer{bitnames::Resolve(chainman.ActiveChainstate().SideState().BitNames(), request.params[0].get_str(), *type)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("status", answer.rcode == bitnames::dns::NOERROR ? "NOERROR" : answer.rcode == bitnames::dns::NXDOMAIN ? "NXDOMAIN" : "REFUSED");
     UniValue records(UniValue::VARR);

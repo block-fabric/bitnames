@@ -14,6 +14,91 @@
 using namespace bitnames;
 
 namespace {
+
+/**
+ * The names on a store of their own, with the shape the tests were written for: undo data as a list,
+ * copies, comparison, and the tables as maps (read whole: for tests).
+ */
+struct TUndo {
+    std::vector<sidechain::StoreUndo> parts;
+    template <typename Stream>
+    void Serialize(Stream& s) const { s << parts; }
+    template <typename Stream>
+    void Unserialize(Stream& s) { s >> parts; }
+};
+
+class TState
+{
+public:
+    TState() : m_store{std::make_unique<sidechain::StoreOverlay>(m_empty, /*journal=*/true)} {}
+    /** A copy: every entry, on a store of its own. */
+    TState(const TState& other) : TState()
+    {
+        other.m_store->ForEach({}, [&](const sidechain::StoreBytes& k, const sidechain::StoreBytes& v) {
+            m_store->Put(k, v);
+            return true;
+        });
+        m_store->TakeUndo();
+    }
+    TState& operator=(const TState& other)
+    {
+        // A store of our own, over our own (empty) base, with the other's entries.
+        auto store{std::make_unique<sidechain::StoreOverlay>(m_empty, /*journal=*/true)};
+        other.m_store->ForEach({}, [&](const sidechain::StoreBytes& k, const sidechain::StoreBytes& v) {
+            store->Put(k, v);
+            return true;
+        });
+        store->TakeUndo();
+        m_store = std::move(store);
+        return *this;
+    }
+    bool ApplyTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, TUndo& undo, std::string& reason)
+    {
+        const bool ok{bitnames::State{*m_store}.ApplyTx(tx, height, params, reason)};
+        undo.parts.push_back(m_store->TakeUndo());
+        return ok;
+    }
+    bool CheckTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reason) const
+    {
+        return View().CheckTx(tx, height, params, reason);
+    }
+    void Revert(const TUndo& undo)
+    {
+        for (auto it{undo.parts.rbegin()}; it != undo.parts.rend(); ++it) m_store->Revert(*it);
+        m_store->TakeUndo();
+    }
+    bitnames::State View() const { return bitnames::State{*m_store}; }
+    operator bitnames::State() const { return View(); }
+    std::map<COutPoint, Token> Tokens() const
+    {
+        std::map<COutPoint, Token> all;
+        View().ForEachToken([&](const COutPoint& o, const Token& t) { all.emplace(o, t); return true; });
+        return all;
+    }
+    std::map<NameHash, NameRecord> Names() const
+    {
+        std::map<NameHash, NameRecord> all;
+        View().ForEachName([&](const NameHash& h, const NameRecord& r) { all.emplace(h, r); return true; });
+        return all;
+    }
+    std::map<Txid, uint256> Reservations() const
+    {
+        // The table itself (0x22, by the reservation's transaction).
+        std::map<Txid, uint256> all;
+        sidechain::Table<uint256, uint256>{0x22}.ForEach(*m_store, [&](const uint256& id, const uint256& c) {
+            all.emplace(Txid::FromUint256(id), c);
+            return true;
+        });
+        return all;
+    }
+    std::optional<NameHash> NameOfSeq(uint32_t seq) const { return View().NameOfSeq(seq); }
+    uint32_t NextSeq() const { return View().NextSeq(); }
+    friend bool operator==(const TState& a, const TState& b) { return sidechain::StoreHash(*a.m_store) == sidechain::StoreHash(*b.m_store); }
+
+private:
+    sidechain::EmptyStore m_empty;
+    std::unique_ptr<sidechain::StoreOverlay> m_store;
+};
 CScript Payee(uint8_t n)
 {
     return CScript() << OP_0 << std::vector<unsigned char>(20, n);
@@ -82,8 +167,8 @@ BOOST_AUTO_TEST_CASE(marker_roundtrip)
 BOOST_AUTO_TEST_CASE(names_move_and_cannot_be_destroyed)
 {
     Consensus::BitNamesParams params;
-    State state;
-    StateUndo undo;
+    TState state;
+    TUndo undo;
     std::string reason;
     const NameHash name{HashName("satoshi")};
     const uint256 nonce{9};
@@ -126,8 +211,8 @@ BOOST_AUTO_TEST_CASE(one_registration_of_a_name_per_block)
     // The original let two registrations of the same name into one block, each with a reservation
     // of the same commitment (whoever sees the first can copy it), and then could not undo the block.
     Consensus::BitNamesParams params;
-    State state;
-    StateUndo undo;
+    TState state;
+    TUndo undo;
     std::string reason;
     const NameHash name{HashName("satoshi")};
     const uint256 nonce{9};
@@ -137,8 +222,8 @@ BOOST_AUTO_TEST_CASE(one_registration_of_a_name_per_block)
     BOOST_REQUIRE(state.ApplyTx(CTransaction{first}, 1, params, undo, reason));
     BOOST_REQUIRE(state.ApplyTx(CTransaction{copy}, 1, params, undo, reason));
 
-    const State before{state};
-    StateUndo block;
+    const TState before{state};
+    TUndo block;
     BOOST_REQUIRE(state.ApplyTx(CTransaction{Tx({COutPoint{first.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 3)}, 2, params, block, reason));
     BOOST_CHECK(!state.ApplyTx(CTransaction{Tx({COutPoint{copy.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 4)}, 2, params, block, reason));
     BOOST_CHECK_EQUAL(reason, "bad-bn-name-taken");
@@ -150,8 +235,8 @@ BOOST_AUTO_TEST_CASE(one_registration_of_a_name_per_block)
 BOOST_AUTO_TEST_CASE(updates_keep_their_history)
 {
     Consensus::BitNamesParams params;
-    State state;
-    StateUndo undo;
+    TState state;
+    TUndo undo;
     std::string reason;
     const NameHash name{HashName("satoshi")};
     const uint256 nonce{9};
@@ -162,14 +247,14 @@ BOOST_AUTO_TEST_CASE(updates_keep_their_history)
     const CMutableTransaction reg{Tx({COutPoint{reserve.GetHash(), 0}}, 1, 0, Register{name, nonce, data}, 2)};
     BOOST_REQUIRE(state.ApplyTx(CTransaction{reg}, 2, params, undo, reason));
 
-    const State before{state};
-    StateUndo block;
+    const TState before{state};
+    TUndo block;
     NameUpdates updates;
     updates.paymail_fee.kind = UpdateKind::DELETE;
     updates.commitment.kind = UpdateKind::SET;
     updates.commitment.value = uint256{3};
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({COutPoint{reg.GetHash(), 0}}, 1, 0, UpdateName{updates}, 3)}, 3, params, block, reason), reason);
-    const NameRecord& record{state.Names().at(name)};
+    const NameRecord record{state.Names().at(name)};
     BOOST_CHECK(!record.Current().paymail_fee);
     BOOST_CHECK(record.Current().commitment == uint256{3});
     BOOST_CHECK(record.AtHeight(2)->paymail_fee == 500);
@@ -178,7 +263,7 @@ BOOST_AUTO_TEST_CASE(updates_keep_their_history)
     // The undo survives serialization and restores the state.
     DataStream stream{};
     stream << block;
-    StateUndo read;
+    TUndo read;
     stream >> read;
     state.Revert(read);
     BOOST_CHECK(state == before);
@@ -194,8 +279,8 @@ BOOST_AUTO_TEST_CASE(icann_names)
     BOOST_CHECK(!IsIcannName(""));
 
     Consensus::BitNamesParams params;
-    State state;
-    StateUndo undo;
+    TState state;
+    TUndo undo;
     std::string reason;
     const NameHash name{HashName("example.com")};
     const uint256 nonce{9};
@@ -218,8 +303,8 @@ BOOST_AUTO_TEST_CASE(icann_names)
     icann.signature.resize(64);
     BOOST_REQUIRE(authority.SignSchnorr(IcannMessage(icann.names, tx.vin[0].prevout), icann.signature, nullptr, uint256{}));
     tx = Tx({}, 0, 0, icann, 5);
-    const State before{state};
-    StateUndo block;
+    const TState before{state};
+    TUndo block;
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, 3, params, block, reason), reason);
     BOOST_CHECK(state.Names().at(name).icann);
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({}, 0, 0, icann, 6)}, 4, params, reason));
@@ -229,9 +314,9 @@ BOOST_AUTO_TEST_CASE(icann_names)
 
 namespace {
 /** A registered name, the outpoint that holds it, in a state. */
-COutPoint Registered(State& state, const std::string& text, NameData data, uint8_t salt, const Consensus::BitNamesParams& params)
+COutPoint Registered(TState& state, const std::string& text, NameData data, uint8_t salt, const Consensus::BitNamesParams& params)
 {
-    StateUndo undo;
+    TUndo undo;
     std::string reason;
     const NameHash name{HashName(text)};
     const uint256 nonce{salt};
@@ -280,15 +365,15 @@ BOOST_AUTO_TEST_CASE(old_markers_still_parse)
 BOOST_AUTO_TEST_CASE(release)
 {
     Consensus::BitNamesParams params;
-    State state;
-    StateUndo undo;
+    TState state;
+    TUndo undo;
     std::string reason;
     // A reservation given up.
     const CMutableTransaction reserve{Tx({}, 0, 1, Reserve{uint256{5}}, 1)};
     BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 1, params, undo, reason));
     BOOST_CHECK_EQUAL(state.Reservations().size(), 1U);
-    const State before{state};
-    StateUndo block;
+    const TState before{state};
+    TUndo block;
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({COutPoint{reserve.GetHash(), 0}}, 0, 0, Release{}, 2)}, 2, params, block, reason), reason);
     BOOST_CHECK(state.Reservations().empty());
     BOOST_CHECK(state.Tokens().empty());
@@ -298,10 +383,10 @@ BOOST_AUTO_TEST_CASE(release)
     // A name given up: free again, and taken by someone else.
     const COutPoint core{Registered(state, "core", {}, 10, params)};
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({core}, 1, 0, Release{}, 3)}, 3, params, reason));
-    StateUndo released;
+    TUndo released;
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({core}, 0, 0, Release{}, 4)}, 3, params, released, reason), reason);
     BOOST_CHECK(!state.Names().contains(HashName("core")));
-    const State after_release{state};
+    const TState after_release{state};
     Registered(state, "core", {}, 20, params);
     BOOST_CHECK(state.Names().contains(HashName("core")));
     state = after_release;
@@ -313,7 +398,7 @@ BOOST_AUTO_TEST_CASE(release)
 BOOST_AUTO_TEST_CASE(subnames)
 {
     Consensus::BitNamesParams params;
-    State state;
+    TState state;
     std::string reason;
     const COutPoint core{Registered(state, "core", {}, 10, params)};
     RegisterSubname sub;
@@ -322,8 +407,8 @@ BOOST_AUTO_TEST_CASE(subnames)
     // Without the parent there is no subname.
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({}, 1, 0, sub, 30)}, 3, params, reason));
     // The parent is spent and carried on; the subname comes after it.
-    const State before{state};
-    StateUndo block;
+    const TState before{state};
+    TUndo block;
     const CMutableTransaction tx{Tx({core}, 2, 0, sub, 31)};
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, 3, params, block, reason), reason);
     const NameHash blog{SubnameHash(HashName("core"), "blog")};
@@ -344,9 +429,9 @@ BOOST_AUTO_TEST_CASE(release_takes_subnames)
     // Releasing a name releases its subnames, at any depth, whoever holds them: whoever registers the
     // name next starts with an empty namespace, and nobody keeps a part of it.
     Consensus::BitNamesParams params;
-    State state;
+    TState state;
     std::string reason;
-    StateUndo setup;
+    TUndo setup;
     const COutPoint core{Registered(state, "core", {}, 10, params)};
     RegisterSubname sub;
     sub.label = "blog";
@@ -364,8 +449,8 @@ BOOST_AUTO_TEST_CASE(release_takes_subnames)
     // Before the rule's height, the subnames stay (as on the test network until then).
     params.audit_rules_height = 100;
     {
-        State old_rules{state};
-        StateUndo undo;
+        TState old_rules{state};
+        TUndo undo;
         BOOST_REQUIRE_MESSAGE(old_rules.ApplyTx(CTransaction{Tx({core_now}, 0, 0, Release{}, 40)}, 5, params, undo, reason), reason);
         BOOST_CHECK(!old_rules.Names().contains(HashName("core")));
         BOOST_CHECK(old_rules.Names().contains(blog));
@@ -379,8 +464,8 @@ BOOST_AUTO_TEST_CASE(release_takes_subnames)
     // Carrying on the name and releasing its subname is fine.
     BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({core_now, COutPoint{made_post.GetHash(), 0}}, 1, 0, Release{}, 43)}, 5, params, reason), reason);
 
-    const State before{state};
-    StateUndo undo;
+    const TState before{state};
+    TUndo undo;
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({core_now}, 0, 0, Release{}, 42)}, 5, params, undo, reason), reason);
     BOOST_CHECK(!state.Names().contains(HashName("core")));
     BOOST_CHECK(!state.Names().contains(blog));
@@ -392,14 +477,14 @@ BOOST_AUTO_TEST_CASE(release_takes_subnames)
     // The next holder of the name makes the same subname.
     const COutPoint again{Registered(state, "core", {}, 50, params)};
     sub.label = "blog";
-    StateUndo next;
+    TUndo next;
     BOOST_CHECK_MESSAGE(state.ApplyTx(CTransaction{Tx({again}, 2, 0, sub, 51)}, 6, params, next, reason), reason);
 
     // Undone, all is back as it was.
-    State reverted{state};
+    TState reverted{state};
     reverted.Revert(next);
-    State back{before};
-    StateUndo redo;
+    TState back{before};
+    TUndo redo;
     BOOST_REQUIRE(back.ApplyTx(CTransaction{Tx({core_now}, 0, 0, Release{}, 42)}, 5, params, redo, reason));
     back.Revert(redo);
     BOOST_CHECK(back == before);
@@ -410,12 +495,12 @@ BOOST_AUTO_TEST_CASE(squatted_subname_gives_way)
     // A name registered by the hash of a subname (no text could hash to it) is a squat: it does not
     // resolve as the subname, and gives way when the parent's holder makes the subname.
     Consensus::BitNamesParams params;
-    State state;
+    TState state;
     std::string reason;
     const COutPoint core{Registered(state, "core", {}, 10, params)};
     const NameHash www{SubnameHash(HashName("core"), "www")};
     // The squat: reserve and register the raw hash.
-    StateUndo undo;
+    TUndo undo;
     const CMutableTransaction reserve{Tx({}, 0, 1, Reserve{ReservationCommitment(www, uint256{9})}, 90)};
     BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 3, params, undo, reason));
     NameData squat_data;
@@ -432,8 +517,8 @@ BOOST_AUTO_TEST_CASE(squatted_subname_gives_way)
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({core}, 2, 0, sub, 92)}, 5, params, reason));
     BOOST_CHECK_EQUAL(reason, "bad-bn-name-taken");
     params.audit_rules_height = 0;
-    const State before{state};
-    StateUndo made;
+    const TState before{state};
+    TUndo made;
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({core}, 2, 0, sub, 92)}, 5, params, made, reason), reason);
     BOOST_CHECK(state.Names().at(www).parent == HashName("core"));
     BOOST_CHECK((Texts(Resolve(state, "www.core.x", dns::A)) == std::vector<std::string>{"A 198.51.100.9"}));
@@ -448,9 +533,9 @@ BOOST_AUTO_TEST_CASE(oldest_reservation_reveals)
     // A copy of someone's reservation, made to register their name first once they reveal it, is younger
     // than theirs and cannot reveal it.
     Consensus::BitNamesParams params;
-    State state;
+    TState state;
     std::string reason;
-    StateUndo undo;
+    TUndo undo;
     const NameHash name{HashName("prize")};
     const uint256 nonce{77};
     const uint256 commitment{ReservationCommitment(name, nonce)};
@@ -462,26 +547,25 @@ BOOST_AUTO_TEST_CASE(oldest_reservation_reveals)
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({COutPoint{copy.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 3)}, 3, params, reason));
     BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-not-first");
     BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({COutPoint{mine.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 4)}, 3, params, reason), reason);
-    // The order survives serialization, and undo.
-    DataStream stream{};
-    stream << state;
-    State read;
-    stream >> read;
-    BOOST_CHECK(read == state);
-    State reverted{state};
+    // The order is in the store's entries: a copy of them (as a restarted node reads them) keeps it.
+    const TState read{state};
+    BOOST_CHECK(!read.CheckTx(CTransaction{Tx({COutPoint{copy.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 3)}, 3, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-not-first");
+    // And undo.
+    TState reverted{state};
     reverted.Revert(undo);
-    BOOST_CHECK(reverted == State{});
+    BOOST_CHECK(reverted == TState{});
 }
 
 BOOST_AUTO_TEST_CASE(numbers_after_register_and_release_in_one_block)
 {
     // A name registered and released in the same block: undone, its number does not come back.
     Consensus::BitNamesParams params;
-    State state;
+    TState state;
     std::string reason;
     const COutPoint core{Registered(state, "core", {}, 10, params)};
-    const State before{state};
-    StateUndo block;
+    const TState before{state};
+    TUndo block;
     RegisterSubname sub;
     sub.label = "tmp";
     const CMutableTransaction made{Tx({core}, 2, 0, sub, 50)};
@@ -494,7 +578,7 @@ BOOST_AUTO_TEST_CASE(numbers_after_register_and_release_in_one_block)
 BOOST_AUTO_TEST_CASE(dns_resolution)
 {
     Consensus::BitNamesParams params;
-    State state;
+    TState state;
     std::string reason;
     NameData core;
     core.ipv4 = SocketV4{{203, 0, 113, 7}, 443};
@@ -520,7 +604,7 @@ BOOST_AUTO_TEST_CASE(dns_resolution)
     RegisterSubname sub;
     sub.label = "anything";
     sub.data.ipv4 = SocketV4{{198, 51, 100, 1}, 80};
-    StateUndo undo;
+    TUndo undo;
     BOOST_REQUIRE(state.ApplyTx(CTransaction{Tx({core_out}, 2, 0, sub, 40)}, 3, params, undo, reason));
     BOOST_CHECK((Texts(Resolve(state, "anything.core.x", dns::A)) == std::vector<std::string>{"A 198.51.100.1"}));
     BOOST_CHECK((Texts(Resolve(state, "other.core.x", dns::A)) == std::vector<std::string>{"A 203.0.113.99"}));
@@ -536,42 +620,5 @@ BOOST_AUTO_TEST_CASE(dns_resolution)
     BOOST_CHECK((std::vector<unsigned char>(response.end() - 4, response.end()) == std::vector<unsigned char>{203, 0, 113, 7}));
 }
 
-BOOST_AUTO_TEST_CASE(undo_formats_inside_a_record)
-{
-    // The undo data is followed by more in its record (the deposits of the block): each format reads
-    // back, the old one written before the reservation orders included, and leaves the rest alone.
-    for (const bool with_seq : {false, true}) {
-        StateUndo undo;
-        if (with_seq) undo.next_seq = 5;
-        undo.tokens.emplace_back(COutPoint{Txid::FromUint256(uint256{7}), 1}, std::nullopt);
-        DataStream current{};
-        current << undo;
-        // The old format: no version byte in front, and no orders (an empty list and an empty
-        // optional, a byte each) at the end.
-        DataStream old{std::span{current}.subspan(1, current.size() - 3)};
-        for (DataStream* stream : {&current, &old}) {
-            *stream << uint8_t{0xab};
-            StateUndo read;
-            *stream >> read;
-            uint8_t after;
-            *stream >> after;
-            BOOST_CHECK_EQUAL(after, 0xab);
-            BOOST_CHECK(read.next_seq == undo.next_seq);
-            BOOST_CHECK(read.tokens == undo.tokens);
-            BOOST_CHECK(read.reservation_orders.empty() && !read.next_reservation_order);
-        }
-    }
-    StateUndo orders;
-    orders.reservation_orders.emplace_back(Txid::FromUint256(uint256{9}), 3);
-    orders.next_reservation_order = 4;
-    DataStream stream{};
-    stream << orders << uint8_t{0xab};
-    StateUndo read;
-    uint8_t after;
-    stream >> read >> after;
-    BOOST_CHECK_EQUAL(after, 0xab);
-    BOOST_CHECK(read.reservation_orders == orders.reservation_orders);
-    BOOST_CHECK(read.next_reservation_order == orders.next_reservation_order);
-}
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -720,24 +720,17 @@ public:
     std::optional<bitnames::Token> getBitNamesToken(const COutPoint& outpoint) override
     {
         LOCK(::cs_main);
-        const auto& tokens{chainman().ActiveChainstate().m_scdb.m_side.BitNames().Tokens()};
-        const auto it{tokens.find(outpoint)};
-        if (it == tokens.end()) return std::nullopt;
-        return it->second;
+        return chainman().ActiveChainstate().SideState().BitNames().GetToken(outpoint);
     }
     std::optional<bitnames::NameRecord> getBitName(const bitnames::NameHash& name) override
     {
         LOCK(::cs_main);
-        const auto& names{chainman().ActiveChainstate().m_scdb.m_side.BitNames().Names()};
-        const auto it{names.find(name)};
-        if (it == names.end()) return std::nullopt;
-        return it->second;
+        return chainman().ActiveChainstate().SideState().BitNames().GetName(name);
     }
     std::optional<std::pair<COutPoint, CScript>> getBitNameOwner(const bitnames::NameHash& name) override
     {
         LOCK(::cs_main);
-        for (const auto& [outpoint, token] : chainman().ActiveChainstate().m_scdb.m_side.BitNames().Tokens()) {
-            if (token.kind != bitnames::Token::Kind::NAME || token.id != name) continue;
+        for (const COutPoint& outpoint : chainman().ActiveChainstate().SideState().BitNames().TokensOf(name)) {
             const auto coin{chainman().ActiveChainstate().CoinsTip().GetCoin(outpoint)};
             if (!coin) return std::nullopt;
             return std::make_pair(outpoint, coin->out.scriptPubKey);
@@ -748,8 +741,9 @@ public:
     {
         LOCK(::cs_main);
         std::vector<std::string> labels;
-        for (const auto& [hash, record] : chainman().ActiveChainstate().m_scdb.m_side.BitNames().Names()) {
-            if (record.parent == parent) labels.push_back(record.label);
+        const bitnames::State names{chainman().ActiveChainstate().SideState().BitNames()};
+        for (const bitnames::NameHash& child : names.ChildrenOf(parent)) {
+            if (const auto record{names.GetName(child)}) labels.push_back(record->label);
         }
         return labels;
     }

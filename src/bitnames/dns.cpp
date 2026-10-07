@@ -285,9 +285,13 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
         return answer;
     }
     if (labels.size() == 1) return answer;
+    // The records looked at, kept here: the store gives copies.
+    std::vector<std::unique_ptr<NameRecord>> seen;
     const auto lookup{[&](const NameHash& hash) -> const NameRecord* {
-        const auto it{state.Names().find(hash)};
-        return it == state.Names().end() ? nullptr : &it->second;
+        auto record{state.GetName(hash)};
+        if (!record) return nullptr;
+        seen.push_back(std::make_unique<NameRecord>(std::move(*record)));
+        return seen.back().get();
     }};
     NameHash current{HashName(labels[labels.size() - 2])};
     const NameRecord* record{lookup(current)};
@@ -472,7 +476,7 @@ private:
         std::vector<unsigned char> buffer(4096);
         const auto resolve{[&chainman](const std::string& qname, uint16_t qtype) {
             LOCK(::cs_main);
-            return Resolve(chainman.ActiveChainstate().m_scdb.m_side.BitNames(), qname, qtype);
+            return Resolve(chainman.ActiveChainstate().SideState().BitNames(), qname, qtype);
         }};
         while (!m_stop) {
             sockaddr_storage from;

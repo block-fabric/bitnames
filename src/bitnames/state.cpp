@@ -449,48 +449,185 @@ struct State::Plan {
     std::vector<Txid> reservations_released;
 };
 
+namespace {
+const sidechain::Table<COutPoint, Token> TOKENS{0x20};
+const sidechain::Table<uint256, NameRecord> NAMES{0x21};
+const sidechain::Table<uint256, uint256> RESERVATIONS{0x22};
+const sidechain::Table<uint32_t, uint256> SEQ{0x23};
+const sidechain::Table<uint256, uint64_t> ORDER{0x24};
+const sidechain::Cell<uint32_t> NEXT_SEQ{0x25, 0};
+const sidechain::Cell<uint64_t> NEXT_ORDER{0x26, 1};
+constexpr uint8_t CHILDREN{0x27};
+constexpr uint8_t NAME_TOKENS{0x28};
+constexpr uint8_t BY_COMMITMENT{0x29};
+const sidechain::Cell<uint64_t> NAME_COUNT{0x2a, 0};
+const sidechain::Cell<uint64_t> RESERVATION_COUNT{0x2b, 0};
+
+sidechain::StoreBytes ChildKey(const uint256& parent, const uint256& child)
+{
+    sidechain::StoreBytes key{CHILDREN};
+    sidechain::KeyCodec<uint256>::Encode(key, parent);
+    sidechain::KeyCodec<uint256>::Encode(key, child);
+    return key;
+}
+sidechain::StoreBytes NameTokenKey(const uint256& name, const COutPoint& outpoint)
+{
+    sidechain::StoreBytes key{NAME_TOKENS};
+    sidechain::KeyCodec<uint256>::Encode(key, name);
+    sidechain::KeyCodec<COutPoint>::Encode(key, outpoint);
+    return key;
+}
+sidechain::StoreBytes CommitmentKey(const uint256& commitment, uint64_t order, const Txid& id)
+{
+    sidechain::StoreBytes key{BY_COMMITMENT};
+    sidechain::KeyCodec<uint256>::Encode(key, commitment);
+    sidechain::KeyCodec<uint64_t>::Encode(key, order);
+    sidechain::KeyCodec<uint256>::Encode(key, id.ToUint256());
+    return key;
+}
+/** The entries under a prefix, as the keys that follow it. */
+std::vector<sidechain::StoreBytes> Under(const sidechain::StoreView& view, const sidechain::StoreBytes& prefix)
+{
+    std::vector<sidechain::StoreBytes> rests;
+    view.ForEach(prefix, [&](const sidechain::StoreBytes& key, const sidechain::StoreBytes&) {
+        rests.emplace_back(key.begin() + prefix.size(), key.end());
+        return true;
+    });
+    return rests;
+}
+} // namespace
+
+sidechain::StoreOverlay& State::Writable() const { return *Assert(m_overlay); }
+std::optional<Token> State::GetToken(const COutPoint& outpoint) const { return TOKENS.Get(*m_view, outpoint); }
+std::optional<NameRecord> State::GetName(const NameHash& name) const { return NAMES.Get(*m_view, name); }
+bool State::HasName(const NameHash& name) const { return NAMES.Contains(*m_view, name); }
+std::optional<uint256> State::GetReservation(const Txid& id) const { return RESERVATIONS.Get(*m_view, id.ToUint256()); }
+std::optional<NameHash> State::NameOfSeq(uint32_t seq) const { return SEQ.Get(*m_view, seq); }
+uint32_t State::NextSeq() const { return NEXT_SEQ.Get(*m_view); }
+uint64_t State::NameCount() const { return NAME_COUNT.Get(*m_view); }
+uint64_t State::ReservationCount() const { return RESERVATION_COUNT.Get(*m_view); }
+std::optional<uint64_t> State::OrderOf(const Txid& id) const { return ORDER.Get(*m_view, id.ToUint256()); }
+
+void State::ForEachName(const std::function<bool(const NameHash&, const NameRecord&)>& fn) const { NAMES.ForEach(*m_view, fn); }
+void State::ForEachToken(const std::function<bool(const COutPoint&, const Token&)>& fn) const { TOKENS.ForEach(*m_view, fn); }
+
+std::vector<NameHash> State::ChildrenOf(const NameHash& parent) const
+{
+    sidechain::StoreBytes prefix{CHILDREN};
+    sidechain::KeyCodec<uint256>::Encode(prefix, parent);
+    std::vector<NameHash> children;
+    for (const auto& rest : Under(*m_view, prefix)) {
+        std::span<const unsigned char> in{rest};
+        children.push_back(sidechain::KeyCodec<uint256>::Decode(in));
+    }
+    return children;
+}
+
+std::vector<COutPoint> State::TokensOf(const NameHash& name) const
+{
+    sidechain::StoreBytes prefix{NAME_TOKENS};
+    sidechain::KeyCodec<uint256>::Encode(prefix, name);
+    std::vector<COutPoint> outpoints;
+    for (const auto& rest : Under(*m_view, prefix)) {
+        std::span<const unsigned char> in{rest};
+        outpoints.push_back(sidechain::KeyCodec<COutPoint>::Decode(in));
+    }
+    return outpoints;
+}
+
+void State::SetToken(const COutPoint& outpoint, const std::optional<Token>& token)
+{
+    sidechain::StoreOverlay& out{Writable()};
+    if (const auto old{GetToken(outpoint)}; old && old->kind == Token::Kind::NAME) out.Erase(NameTokenKey(old->id, outpoint));
+    if (token) {
+        TOKENS.Put(out, outpoint, *token);
+        if (token->kind == Token::Kind::NAME) out.Put(NameTokenKey(token->id, outpoint), {});
+    } else {
+        TOKENS.Erase(out, outpoint);
+    }
+}
+
+void State::SetName(const NameHash& name, const std::optional<NameRecord>& record)
+{
+    sidechain::StoreOverlay& out{Writable()};
+    const auto old{GetName(name)};
+    if (old && old->parent) out.Erase(ChildKey(*old->parent, name));
+    if (record) {
+        NAMES.Put(out, name, *record);
+        if (record->parent) out.Put(ChildKey(*record->parent, name), {});
+        if (!old) NAME_COUNT.Put(out, NameCount() + 1);
+    } else if (old) {
+        NAMES.Erase(out, name);
+        NAME_COUNT.Put(out, NameCount() - 1);
+    }
+}
+
+void State::SetReservation(const Txid& id, const std::optional<uint256>& commitment)
+{
+    sidechain::StoreOverlay& out{Writable()};
+    const auto old{GetReservation(id)};
+    const uint64_t order{OrderOf(id).value_or(0)};
+    if (old) out.Erase(CommitmentKey(*old, order, id));
+    if (commitment) {
+        RESERVATIONS.Put(out, id.ToUint256(), *commitment);
+        out.Put(CommitmentKey(*commitment, order, id), {});
+        if (!old) RESERVATION_COUNT.Put(out, ReservationCount() + 1);
+    } else if (old) {
+        RESERVATIONS.Erase(out, id.ToUint256());
+        RESERVATION_COUNT.Put(out, ReservationCount() - 1);
+    }
+}
+
+void State::SetOrder(const Txid& id, const std::optional<uint64_t>& order)
+{
+    sidechain::StoreOverlay& out{Writable()};
+    // The commitment index is keyed by order: moved with it.
+    const auto commitment{GetReservation(id)};
+    if (commitment) out.Erase(CommitmentKey(*commitment, OrderOf(id).value_or(0), id));
+    if (order) {
+        ORDER.Put(out, id.ToUint256(), *order);
+    } else {
+        ORDER.Erase(out, id.ToUint256());
+    }
+    if (commitment) out.Put(CommitmentKey(*commitment, order.value_or(0), id), {});
+}
+
 std::vector<std::pair<uint32_t, Token>> State::SpentTokens(const CTransaction& tx) const
 {
     std::vector<std::pair<uint32_t, Token>> spent;
     if (tx.IsCoinBase()) return spent;
     for (uint32_t i{0}; i < tx.vin.size(); ++i) {
-        if (const auto it{m_tokens.find(tx.vin[i].prevout)}; it != m_tokens.end()) spent.emplace_back(i, it->second);
+        if (const auto token{GetToken(tx.vin[i].prevout)}) spent.emplace_back(i, *token);
     }
     return spent;
 }
 
-std::optional<NameHash> State::NameOfSeq(uint32_t seq) const
-{
-    const auto it{m_seq.find(seq)};
-    if (it == m_seq.end()) return std::nullopt;
-    return it->second;
-}
-
 std::set<NameHash> State::ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const
 {
-    // Who is under whom, in one pass; then down from the roots.
-    std::multimap<NameHash, NameHash> children;
-    for (const auto& [hash, record] : m_names) {
-        if (record.parent) children.emplace(*record.parent, hash);
-    }
+    // Down from the roots, through the index of names by parent.
     std::set<NameHash> gone{roots.begin(), roots.end()};
     std::vector<NameHash> todo{roots};
     while (!todo.empty()) {
         const NameHash at{todo.back()};
         todo.pop_back();
-        const auto [first, last]{children.equal_range(at)};
-        for (auto it{first}; it != last; ++it) {
-            if (gone.insert(it->second).second) {
-                plan.names_released.push_back(it->second);
-                todo.push_back(it->second);
+        sidechain::StoreBytes prefix{CHILDREN};
+        sidechain::KeyCodec<uint256>::Encode(prefix, at);
+        for (const auto& rest : Under(*m_view, prefix)) {
+            std::span<const unsigned char> in{rest};
+            const NameHash child{sidechain::KeyCodec<uint256>::Decode(in)};
+            if (gone.insert(child).second) {
+                plan.names_released.push_back(child);
+                todo.push_back(child);
             }
         }
     }
     // Their holders keep the coins, which no longer carry a name; the roots' tokens too (a released
     // name's own token is spent by the transaction, unless it is a squat that gives way).
     const std::set<COutPoint> spent_here{plan.spent.begin(), plan.spent.end()};
-    for (const auto& [outpoint, token] : m_tokens) {
-        if (token.kind == Token::Kind::NAME && gone.contains(token.id) && !spent_here.contains(outpoint)) plan.spent.push_back(outpoint);
+    for (const NameHash& name : gone) {
+        for (const COutPoint& outpoint : TokensOf(name)) {
+            if (!spent_here.contains(outpoint)) plan.spent.push_back(outpoint);
+        }
     }
     return gone;
 }
@@ -537,7 +674,7 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         plan.reservation_commitment = reserve->commitment;
     } else if (const auto* reg{op ? std::get_if<Register>(op) : nullptr}) {
         // Names registered before, in this block included, are taken.
-        if (m_names.contains(reg->name)) return invalid("bad-bn-name-taken");
+        if (HasName(reg->name)) return invalid("bad-bn-name-taken");
         const uint256 implied{ReservationCommitment(reg->name, reg->nonce)};
         const auto burned{std::find_if(reservations_out.begin(), reservations_out.end(), [&](const Token& t) { return t.commitment == implied; })};
         if (burned == reservations_out.end()) return invalid("bad-bn-no-reservation");
@@ -545,21 +682,23 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         if (height >= params.audit_rules_height) {
             // Only the oldest reservation of a commitment reveals it: a copy of someone else's, made to
             // register the name first once they reveal it, is younger.
-            const auto order_of{[&](const Txid& id) {
-                const auto it{m_reservation_order.find(id)};
-                return it == m_reservation_order.end() ? uint64_t{0} : it->second;
-            }};
+            // The index of reservations by commitment has them oldest first: the first one says.
             const Txid mine{Txid::FromUint256(burned->id)};
-            for (const auto& [other, commitment] : m_reservations) {
-                if (commitment != implied || other == mine) continue;
-                if (order_of(other) < order_of(mine)) return invalid("bad-bn-reservation-not-first");
+            sidechain::StoreBytes prefix{BY_COMMITMENT};
+            sidechain::KeyCodec<uint256>::Encode(prefix, implied);
+            if (const auto first{m_view->Next(prefix, prefix)}) {
+                std::span<const unsigned char> in{first->first};
+                in = in.subspan(prefix.size());
+                const uint64_t order{sidechain::KeyCodec<uint64_t>::Decode(in)};
+                const Txid other{Txid::FromUint256(sidechain::KeyCodec<uint256>::Decode(in))};
+                if (other != mine && order < OrderOf(mine).value_or(0)) return invalid("bad-bn-reservation-not-first");
             }
         }
         plan.reservation_revealed = Txid::FromUint256(burned->id);
         reservations_out.erase(burned);
         names_out.push_back(reg->name);
         NameRecord record;
-        record.seq = m_next_seq;
+        record.seq = NextSeq();
         record.registration = txid;
         record.height = height;
         record.commitment.push_back({reg->data.commitment, txid, height});
@@ -571,13 +710,16 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         record.records.push_back({reg->data.records, txid, height});
         if (reg->text) record.text = *reg->text;
         plan.names.emplace_back(reg->name, std::move(record));
-        plan.seq = std::make_pair(m_next_seq, reg->name);
+        plan.seq = std::make_pair(NextSeq(), reg->name);
         if (height >= params.audit_rules_height) {
             // Subnames left by an earlier holder of the name, released before releasing took them
             // along, go now: the new holder starts with an empty namespace.
             std::vector<NameHash> orphans;
-            for (const auto& [hash, other] : m_names) {
-                if (other.parent == reg->name) orphans.push_back(hash);
+            sidechain::StoreBytes prefix{CHILDREN};
+            sidechain::KeyCodec<uint256>::Encode(prefix, reg->name);
+            for (const auto& rest : Under(*m_view, prefix)) {
+                std::span<const unsigned char> in{rest};
+                orphans.push_back(sidechain::KeyCodec<uint256>::Decode(in));
             }
             if (!orphans.empty()) {
                 plan.names_released.insert(plan.names_released.end(), orphans.begin(), orphans.end());
@@ -588,9 +730,9 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         if (bi < 1 || bo != bi || ro != ri) return invalid(bi < 1 ? "bad-bn-no-name" : "bad-bn-unbalanced");
         // The name updated is the one spent last; the others only move.
         const NameHash& name{names_in.back()};
-        const auto it{m_names.find(name)};
-        if (it == m_names.end()) return invalid("bad-bn-name-unknown");
-        NameRecord record{it->second};
+        const auto found{GetName(name)};
+        if (!found) return invalid("bad-bn-name-unknown");
+        NameRecord record{*found};
         ApplyUpdate(record.commitment, update->updates.commitment, txid, height);
         ApplyUpdate(record.ipv4, update->updates.ipv4, txid, height);
         ApplyUpdate(record.ipv6, update->updates.ipv6, txid, height);
@@ -607,10 +749,10 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         }
         for (const std::string& text : icann->names) {
             const NameHash name{HashName(text)};
-            const auto it{m_names.find(name)};
-            if (it == m_names.end()) return invalid("bad-bn-icann-unknown");
-            if (it->second.icann) return invalid("bad-bn-icann-already");
-            NameRecord record{it->second};
+            const auto found{GetName(name)};
+            if (!found) return invalid("bad-bn-icann-unknown");
+            if (found->icann) return invalid("bad-bn-icann-already");
+            NameRecord record{*found};
             record.icann = true;
             record.icann_name = text;
             plan.names.emplace_back(name, std::move(record));
@@ -619,8 +761,7 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         if (bo > bi || ro > ri || bo + ro == bi + ri) return invalid("bad-bn-unbalanced");
         // The names and reservations carried on are the first spent; the rest go.
         for (size_t i{bo}; i < bi; ++i) {
-            const auto it{m_names.find(names_in[i])};
-            if (it == m_names.end()) return invalid("bad-bn-name-unknown");
+            if (!HasName(names_in[i])) return invalid("bad-bn-name-unknown");
             plan.names_released.push_back(names_in[i]);
         }
         if (height >= params.audit_rules_height) {
@@ -637,19 +778,19 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         if (bi < 1 || bo != bi + 1 || ro != ri) return invalid(bi < 1 ? "bad-bn-no-name" : "bad-bn-unbalanced");
         // A subname of the name spent last.
         const NameHash& parent{names_in.back()};
-        if (!m_names.contains(parent)) return invalid("bad-bn-name-unknown");
+        if (!HasName(parent)) return invalid("bad-bn-name-unknown");
         const NameHash child{SubnameHash(parent, sub->label)};
-        if (const auto taken{m_names.find(child)}; taken != m_names.end()) {
+        if (const auto taken{GetName(child)}) {
             // A top-level name with the hash of this subname can only be one registered by its hash,
             // with no text that hashes to it: a squat. From the rule's height it gives way, with
             // whatever was made under it; a real subname of that label is taken.
-            if (taken->second.parent || height < params.audit_rules_height) return invalid("bad-bn-name-taken");
+            if (taken->parent || height < params.audit_rules_height) return invalid("bad-bn-name-taken");
             plan.names_replaced.push_back(child);
             ReleaseDescendants(plan, {child});
         }
         names_out.push_back(child);
         NameRecord record;
-        record.seq = m_next_seq;
+        record.seq = NextSeq();
         record.registration = txid;
         record.height = height;
         record.parent = parent;
@@ -662,7 +803,7 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         record.paymail_fee.push_back({sub->data.paymail_fee, txid, height});
         record.records.push_back({sub->data.records, txid, height});
         plan.names.emplace_back(child, std::move(record));
-        plan.seq = std::make_pair(m_next_seq, child);
+        plan.seq = std::make_pair(NextSeq(), child);
     } else {
         if (bo != bi || ro != ri) return invalid("bad-bn-unbalanced");
     }
@@ -683,118 +824,43 @@ bool State::CheckTx(const CTransaction& tx, int height, const Consensus::BitName
     return MakePlan(tx, height, params, reject_reason).has_value();
 }
 
-bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, StateUndo& undo, std::string& reject_reason)
+bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason)
 {
     const auto plan{MakePlan(tx, height, params, reject_reason)};
     if (!plan) return false;
-    if (!undo.next_seq) undo.next_seq = m_next_seq;
-    // Every change is noted with the value it replaced; reverting them in reverse order restores the state.
-    const auto set_token{[&](const COutPoint& outpoint, const std::optional<Token>& value) {
-        const auto it{m_tokens.find(outpoint)};
-        undo.tokens.emplace_back(outpoint, it == m_tokens.end() ? std::nullopt : std::optional<Token>{it->second});
-        if (value) {
-            m_tokens.insert_or_assign(outpoint, *value);
-        } else if (it != m_tokens.end()) {
-            m_tokens.erase(it);
-        }
-    }};
-    const auto set_reservation{[&](const Txid& id, const std::optional<uint256>& value) {
-        const auto it{m_reservations.find(id)};
-        undo.reservations.emplace_back(id, it == m_reservations.end() ? std::nullopt : std::optional<uint256>{it->second});
-        if (value) {
-            m_reservations.insert_or_assign(id, *value);
-        } else if (it != m_reservations.end()) {
-            m_reservations.erase(it);
-        }
-    }};
-    for (const COutPoint& outpoint : plan->spent) set_token(outpoint, std::nullopt);
-    for (const auto& [outpoint, token] : plan->created) set_token(outpoint, token);
-    if (plan->reservation_made) set_reservation(*plan->reservation_made, plan->reservation_commitment);
+    sidechain::StoreOverlay& out{Writable()};
+    // In the order the rules have always applied a plan in.
+    for (const COutPoint& outpoint : plan->spent) SetToken(outpoint, std::nullopt);
+    for (const auto& [outpoint, token] : plan->created) SetToken(outpoint, token);
+    if (plan->reservation_made) SetReservation(*plan->reservation_made, plan->reservation_commitment);
     // The order of reservations, for the rule that the oldest of a commitment reveals it.
-    const auto set_order{[&](const Txid& id, const std::optional<uint64_t>& value) {
-        const auto it{m_reservation_order.find(id)};
-        undo.reservation_orders.emplace_back(id, it == m_reservation_order.end() ? std::nullopt : std::optional<uint64_t>{it->second});
-        if (value) {
-            m_reservation_order.insert_or_assign(id, *value);
-        } else if (it != m_reservation_order.end()) {
-            m_reservation_order.erase(it);
-        }
-    }};
     if (plan->reservation_made && height >= params.audit_rules_height) {
-        if (!undo.next_reservation_order) undo.next_reservation_order = m_next_reservation_order;
-        set_order(*plan->reservation_made, m_next_reservation_order++);
+        const uint64_t next{NEXT_ORDER.Get(*m_view)};
+        SetOrder(*plan->reservation_made, next);
+        NEXT_ORDER.Put(out, next + 1);
     }
-    if (plan->reservation_revealed && m_reservation_order.contains(*plan->reservation_revealed)) set_order(*plan->reservation_revealed, std::nullopt);
+    if (plan->reservation_revealed && OrderOf(*plan->reservation_revealed)) SetOrder(*plan->reservation_revealed, std::nullopt);
     for (const Txid& id : plan->reservations_released) {
-        if (m_reservation_order.contains(id)) set_order(id, std::nullopt);
+        if (OrderOf(id)) SetOrder(id, std::nullopt);
     }
-    if (plan->reservation_revealed) set_reservation(*plan->reservation_revealed, std::nullopt);
+    if (plan->reservation_revealed) SetReservation(*plan->reservation_revealed, std::nullopt);
     for (const NameHash& name : plan->names_replaced) {
-        if (const auto it{m_names.find(name)}; it != m_names.end()) {
-            undo.seqs.emplace_back(it->second.seq, name);
-            m_seq.erase(it->second.seq);
-        }
+        if (const auto record{GetName(name)}) SEQ.Erase(out, record->seq);
     }
-    for (const auto& [name, record] : plan->names) {
-        const auto it{m_names.find(name)};
-        undo.names.emplace_back(name, it == m_names.end() ? std::nullopt : std::optional<NameRecord>{it->second});
-        m_names.insert_or_assign(name, record);
-    }
+    for (const auto& [name, record] : plan->names) SetName(name, record);
     if (plan->seq) {
-        m_seq.emplace(plan->seq->first, plan->seq->second);
-        ++m_next_seq;
+        SEQ.Put(out, plan->seq->first, plan->seq->second);
+        NEXT_SEQ.Put(out, NextSeq() + 1);
     }
     // Released names leave the registry and the numbering (their numbers are not given again).
     for (const NameHash& name : plan->names_released) {
-        const auto it{m_names.find(name)};
-        if (it == m_names.end()) continue;
-        undo.names.emplace_back(name, it->second);
-        undo.seqs.emplace_back(it->second.seq, name);
-        m_seq.erase(it->second.seq);
-        m_names.erase(it);
+        const auto record{GetName(name)};
+        if (!record) continue;
+        SEQ.Erase(out, record->seq);
+        SetName(name, std::nullopt);
     }
-    for (const Txid& id : plan->reservations_released) set_reservation(id, std::nullopt);
+    for (const Txid& id : plan->reservations_released) SetReservation(id, std::nullopt);
     return true;
-}
-
-void State::Revert(const StateUndo& undo)
-{
-    for (auto it{undo.tokens.rbegin()}; it != undo.tokens.rend(); ++it) {
-        if (it->second) {
-            m_tokens.insert_or_assign(it->first, *it->second);
-        } else {
-            m_tokens.erase(it->first);
-        }
-    }
-    for (auto it{undo.names.rbegin()}; it != undo.names.rend(); ++it) {
-        if (it->second) {
-            m_names.insert_or_assign(it->first, *it->second);
-        } else {
-            m_names.erase(it->first);
-        }
-    }
-    for (auto it{undo.reservations.rbegin()}; it != undo.reservations.rend(); ++it) {
-        if (it->second) {
-            m_reservations.insert_or_assign(it->first, *it->second);
-        } else {
-            m_reservations.erase(it->first);
-        }
-    }
-    for (auto it{undo.reservation_orders.rbegin()}; it != undo.reservation_orders.rend(); ++it) {
-        if (it->second) {
-            m_reservation_order.insert_or_assign(it->first, *it->second);
-        } else {
-            m_reservation_order.erase(it->first);
-        }
-    }
-    if (undo.next_reservation_order) m_next_reservation_order = *undo.next_reservation_order;
-    // Numbers given back first, then those the block gave dropped: a name registered and released in
-    // the same block has a number of the block's, which must not come back.
-    for (const auto& [seq, name] : undo.seqs) m_seq.emplace(seq, name);
-    if (undo.next_seq) {
-        m_seq.erase(m_seq.lower_bound(*undo.next_seq), m_seq.end());
-        m_next_seq = *undo.next_seq;
-    }
 }
 
 } // namespace bitnames

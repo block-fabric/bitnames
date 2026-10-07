@@ -396,12 +396,12 @@ UniValue DataToJSON(const NameData& data)
 std::string FullText(const State& state, const NameRecord& record)
 {
     std::string text{record.parent ? record.label : record.text};
-    const NameRecord* at{&record};
-    for (int depth{0}; at->parent && depth < 64; ++depth) {
-        const auto it{state.Names().find(*at->parent)};
-        if (it == state.Names().end()) return {};
-        at = &it->second;
-        const std::string part{at->parent ? at->label : at->text};
+    NameRecord at{record};
+    for (int depth{0}; at.parent && depth < 64; ++depth) {
+        auto parent{state.GetName(*at.parent)};
+        if (!parent) return {};
+        at = std::move(*parent);
+        const std::string part{at.parent ? at.label : at.text};
         if (part.empty()) return {};
         text += "." + part;
     }
@@ -411,7 +411,7 @@ std::string FullText(const State& state, const NameRecord& record)
 NameHash ParseNameArg(const UniValue& value, const State* state, const std::function<bool(const NameHash&)>& exists)
 {
     const std::string text{value.get_str()};
-    const auto known{[&](const NameHash& h) { return state ? state->Names().contains(h) : (exists && exists(h)); }};
+    const auto known{[&](const NameHash& h) { return state ? state->HasName(h) : (exists && exists(h)); }};
     // A subname: down from the last label, if each step is on the chain.
     if (text.find('.') != std::string::npos && (state || exists)) {
         std::vector<std::string> labels;
@@ -429,8 +429,8 @@ NameHash ParseNameArg(const UniValue& value, const State* state, const std::func
             found = known(at);
             // With the state at hand: only a subname of this very name (not a top-level name registered by its hash).
             if (found && state) {
-                const auto& record{state->Names().at(at)};
-                found = record.parent == parent && record.label == labels[i];
+                const auto record{state->GetName(at)};
+                found = record && record->parent == parent && record->label == labels[i];
             }
         }
         if (found) return at;
