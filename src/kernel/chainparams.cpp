@@ -338,7 +338,7 @@ public:
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
         // Releasing a name released only it until then; see BitNamesParams.
-        consensus.sidechain.bitnames.release_subnames_height = 1'000'000;
+        consensus.sidechain.bitnames.audit_rules_height = 1'000'000;
         // The test network ran without it until then; see SidechainParams.
         consensus.sidechain.single_bundle_height = 1'000'000;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next

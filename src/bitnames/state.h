@@ -388,8 +388,11 @@ struct StateUndo {
     std::vector<std::pair<Txid, std::optional<uint256>>> reservations;
     //! Numbers of released names, to give back to them.
     std::vector<std::pair<uint32_t, NameHash>> seqs;
+    //! The order of reservations (State::m_reservation_order) the block changed, and the next one.
+    std::vector<std::pair<Txid, std::optional<uint64_t>>> reservation_orders;
+    std::optional<uint64_t> next_reservation_order;
 
-    bool empty() const { return !next_seq && tokens.empty() && names.empty() && reservations.empty() && seqs.empty(); }
+    bool empty() const { return !next_seq && tokens.empty() && names.empty() && reservations.empty() && seqs.empty() && reservation_orders.empty() && !next_reservation_order; }
 
     template <typename Stream>
     void Serialize(Stream& s) const
@@ -399,6 +402,8 @@ struct StateUndo {
         detail::WriteChanges(s, names);
         detail::WriteChanges(s, reservations);
         s << seqs;
+        detail::WriteChanges(s, reservation_orders);
+        s << BN_OPT(next_reservation_order);
     }
     template <typename Stream>
     void Unserialize(Stream& s)
@@ -408,6 +413,14 @@ struct StateUndo {
         detail::ReadChanges(s, names);
         detail::ReadChanges(s, reservations);
         s >> seqs;
+        // Undo data written before reservations had an order ends here.
+        reservation_orders.clear();
+        next_reservation_order.reset();
+        if constexpr (requires { s.empty(); }) {
+            if (s.empty()) return;
+        }
+        detail::ReadChanges(s, reservation_orders);
+        s >> BN_OPT(next_reservation_order);
     }
 };
 
@@ -434,13 +447,31 @@ public:
     std::optional<NameHash> NameOfSeq(uint32_t seq) const;
     uint32_t NextSeq() const { return m_next_seq; }
 
-    SERIALIZE_METHODS(State, obj) { READWRITE(obj.m_tokens, obj.m_names, obj.m_reservations, obj.m_seq, obj.m_next_seq); }
+    template <typename Stream>
+    void Serialize(Stream& s) const
+    {
+        s << m_tokens << m_names << m_reservations << m_seq << m_next_seq << m_reservation_order << m_next_reservation_order;
+    }
+    template <typename Stream>
+    void Unserialize(Stream& s)
+    {
+        s >> m_tokens >> m_names >> m_reservations >> m_seq >> m_next_seq;
+        // A state written before reservations had an order ends here: theirs count as the oldest.
+        m_reservation_order.clear();
+        m_next_reservation_order = 1;
+        if constexpr (requires { s.empty(); }) {
+            if (s.empty()) return;
+        }
+        s >> m_reservation_order >> m_next_reservation_order;
+    }
     friend bool operator==(const State&, const State&) = default;
 
 private:
     struct Plan;
     /** Everything ApplyTx would do, worked out without changing anything. */
     std::optional<Plan> MakePlan(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason) const;
+    /** Add the descendants of `roots` to the names a plan releases, and the tokens of `roots` and of them to what it spends. @return roots and descendants */
+    std::set<NameHash> ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const;
 
     //! What outputs carry names and reservations.
     std::map<COutPoint, Token> m_tokens;
@@ -450,6 +481,9 @@ private:
     //! Names by their number.
     std::map<uint32_t, NameHash> m_seq;
     uint32_t m_next_seq{0};
+    //! The order in which reservations were made (from audit_rules_height; older ones count as 0).
+    std::map<Txid, uint64_t> m_reservation_order;
+    uint64_t m_next_reservation_order{1};
 };
 
 /** Whether the marker of a transaction, if any, is well formed. This depends on the transaction alone. */

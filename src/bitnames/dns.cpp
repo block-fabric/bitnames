@@ -321,7 +321,8 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
     for (size_t i{labels.size() - 2}; i-- > 0;) {
         const std::string& label{labels[i]};
         const NameHash sub{SubnameHash(current, label)};
-        if (const NameRecord* subname{lookup(sub)}) {
+        // Only a subname of this very name: a top-level name registered by the hash of a subname is none.
+        if (const NameRecord* subname{lookup(sub)}; subname && subname->parent == current && subname->label == label) {
             current = sub;
             record = subname;
             node = RootNode(*subname);

@@ -92,10 +92,15 @@ struct BitNamesParams {
      */
     uint256 icann_authority;
     /**
-     * From this height, releasing a name releases its subnames, to any depth, whoever holds them, as
-     * a DNS domain takes its subdomains with it: whoever registers the name next starts with none.
+     * From this height, the rules of the audit of October 2026:
+     * - releasing a name releases its subnames, to any depth, whoever holds them, as a DNS domain takes
+     *   its subdomains with it: whoever registers the name next starts with none (and so does a name
+     *   registered over subnames an earlier holder left);
+     * - a top-level name registered by the hash of a subname (a squat) gives way to that subname;
+     * - a reservation is revealed only if no older one has the same commitment: a copy of someone
+     *   else's, made to register the name first once they reveal it, never is.
      */
-    int release_subnames_height{0};
+    int audit_rules_height{0};
 };
 
 /**

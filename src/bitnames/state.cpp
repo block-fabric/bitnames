@@ -444,6 +444,8 @@ struct State::Plan {
     std::optional<std::pair<uint32_t, NameHash>> seq;
     //! Names and reservations released.
     std::vector<NameHash> names_released;
+    //! Names whose record a new one replaces (a top-level name squatting a subname): their numbers go.
+    std::vector<NameHash> names_replaced;
     std::vector<Txid> reservations_released;
 };
 
@@ -462,6 +464,35 @@ std::optional<NameHash> State::NameOfSeq(uint32_t seq) const
     const auto it{m_seq.find(seq)};
     if (it == m_seq.end()) return std::nullopt;
     return it->second;
+}
+
+std::set<NameHash> State::ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const
+{
+    // Who is under whom, in one pass; then down from the roots.
+    std::multimap<NameHash, NameHash> children;
+    for (const auto& [hash, record] : m_names) {
+        if (record.parent) children.emplace(*record.parent, hash);
+    }
+    std::set<NameHash> gone{roots.begin(), roots.end()};
+    std::vector<NameHash> todo{roots};
+    while (!todo.empty()) {
+        const NameHash at{todo.back()};
+        todo.pop_back();
+        const auto [first, last]{children.equal_range(at)};
+        for (auto it{first}; it != last; ++it) {
+            if (gone.insert(it->second).second) {
+                plan.names_released.push_back(it->second);
+                todo.push_back(it->second);
+            }
+        }
+    }
+    // Their holders keep the coins, which no longer carry a name; the roots' tokens too (a released
+    // name's own token is spent by the transaction, unless it is a squat that gives way).
+    const std::set<COutPoint> spent_here{plan.spent.begin(), plan.spent.end()};
+    for (const auto& [outpoint, token] : m_tokens) {
+        if (token.kind == Token::Kind::NAME && gone.contains(token.id) && !spent_here.contains(outpoint)) plan.spent.push_back(outpoint);
+    }
+    return gone;
 }
 
 std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason) const
@@ -511,6 +542,19 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         const auto burned{std::find_if(reservations_out.begin(), reservations_out.end(), [&](const Token& t) { return t.commitment == implied; })};
         if (burned == reservations_out.end()) return invalid("bad-bn-no-reservation");
         if (ri != ro + 1 || bo != bi + 1) return invalid("bad-bn-unbalanced");
+        if (height >= params.audit_rules_height) {
+            // Only the oldest reservation of a commitment reveals it: a copy of someone else's, made to
+            // register the name first once they reveal it, is younger.
+            const auto order_of{[&](const Txid& id) {
+                const auto it{m_reservation_order.find(id)};
+                return it == m_reservation_order.end() ? uint64_t{0} : it->second;
+            }};
+            const Txid mine{Txid::FromUint256(burned->id)};
+            for (const auto& [other, commitment] : m_reservations) {
+                if (commitment != implied || other == mine) continue;
+                if (order_of(other) < order_of(mine)) return invalid("bad-bn-reservation-not-first");
+            }
+        }
         plan.reservation_revealed = Txid::FromUint256(burned->id);
         reservations_out.erase(burned);
         names_out.push_back(reg->name);
@@ -528,6 +572,18 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         if (reg->text) record.text = *reg->text;
         plan.names.emplace_back(reg->name, std::move(record));
         plan.seq = std::make_pair(m_next_seq, reg->name);
+        if (height >= params.audit_rules_height) {
+            // Subnames left by an earlier holder of the name, released before releasing took them
+            // along, go now: the new holder starts with an empty namespace.
+            std::vector<NameHash> orphans;
+            for (const auto& [hash, other] : m_names) {
+                if (other.parent == reg->name) orphans.push_back(hash);
+            }
+            if (!orphans.empty()) {
+                plan.names_released.insert(plan.names_released.end(), orphans.begin(), orphans.end());
+                ReleaseDescendants(plan, orphans);
+            }
+        }
     } else if (const auto* update{op ? std::get_if<UpdateName>(op) : nullptr}) {
         if (bi < 1 || bo != bi || ro != ri) return invalid(bi < 1 ? "bad-bn-no-name" : "bad-bn-unbalanced");
         // The name updated is the one spent last; the others only move.
@@ -567,25 +623,11 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             if (it == m_names.end()) return invalid("bad-bn-name-unknown");
             plan.names_released.push_back(names_in[i]);
         }
-        if (height >= params.release_subnames_height) {
-            // The subnames of the released names, at any depth, go with them; their holders keep the
-            // coins, which no longer carry a name.
-            std::set<NameHash> gone{plan.names_released.begin(), plan.names_released.end()};
-            for (bool grew{true}; grew;) {
-                grew = false;
-                for (const auto& [hash, record] : m_names) {
-                    if (record.parent && gone.contains(*record.parent) && gone.insert(hash).second) {
-                        plan.names_released.push_back(hash);
-                        grew = true;
-                    }
-                }
-            }
+        if (height >= params.audit_rules_height) {
+            // The subnames of the released names, at any depth, go with them.
+            const std::set<NameHash> gone{ReleaseDescendants(plan, plan.names_released)};
             for (size_t i{0}; i < bo; ++i) {
                 if (gone.contains(names_in[i])) return invalid("bad-bn-release-subname-kept");
-            }
-            const std::set<COutPoint> spent_here{plan.spent.begin(), plan.spent.end()};
-            for (const auto& [outpoint, token] : m_tokens) {
-                if (token.kind == Token::Kind::NAME && gone.contains(token.id) && !spent_here.contains(outpoint)) plan.spent.push_back(outpoint);
             }
         }
         for (size_t i{ro}; i < ri; ++i) plan.reservations_released.push_back(Txid::FromUint256(reservations_in[i].id));
@@ -597,7 +639,14 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         const NameHash& parent{names_in.back()};
         if (!m_names.contains(parent)) return invalid("bad-bn-name-unknown");
         const NameHash child{SubnameHash(parent, sub->label)};
-        if (m_names.contains(child)) return invalid("bad-bn-name-taken");
+        if (const auto taken{m_names.find(child)}; taken != m_names.end()) {
+            // A top-level name with the hash of this subname can only be one registered by its hash,
+            // with no text that hashes to it: a squat. From the rule's height it gives way, with
+            // whatever was made under it; a real subname of that label is taken.
+            if (taken->second.parent || height < params.audit_rules_height) return invalid("bad-bn-name-taken");
+            plan.names_replaced.push_back(child);
+            ReleaseDescendants(plan, {child});
+        }
         names_out.push_back(child);
         NameRecord record;
         record.seq = m_next_seq;
@@ -661,7 +710,31 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::BitName
     for (const COutPoint& outpoint : plan->spent) set_token(outpoint, std::nullopt);
     for (const auto& [outpoint, token] : plan->created) set_token(outpoint, token);
     if (plan->reservation_made) set_reservation(*plan->reservation_made, plan->reservation_commitment);
+    // The order of reservations, for the rule that the oldest of a commitment reveals it.
+    const auto set_order{[&](const Txid& id, const std::optional<uint64_t>& value) {
+        const auto it{m_reservation_order.find(id)};
+        undo.reservation_orders.emplace_back(id, it == m_reservation_order.end() ? std::nullopt : std::optional<uint64_t>{it->second});
+        if (value) {
+            m_reservation_order.insert_or_assign(id, *value);
+        } else if (it != m_reservation_order.end()) {
+            m_reservation_order.erase(it);
+        }
+    }};
+    if (plan->reservation_made && height >= params.audit_rules_height) {
+        if (!undo.next_reservation_order) undo.next_reservation_order = m_next_reservation_order;
+        set_order(*plan->reservation_made, m_next_reservation_order++);
+    }
+    if (plan->reservation_revealed && m_reservation_order.contains(*plan->reservation_revealed)) set_order(*plan->reservation_revealed, std::nullopt);
+    for (const Txid& id : plan->reservations_released) {
+        if (m_reservation_order.contains(id)) set_order(id, std::nullopt);
+    }
     if (plan->reservation_revealed) set_reservation(*plan->reservation_revealed, std::nullopt);
+    for (const NameHash& name : plan->names_replaced) {
+        if (const auto it{m_names.find(name)}; it != m_names.end()) {
+            undo.seqs.emplace_back(it->second.seq, name);
+            m_seq.erase(it->second.seq);
+        }
+    }
     for (const auto& [name, record] : plan->names) {
         const auto it{m_names.find(name)};
         undo.names.emplace_back(name, it == m_names.end() ? std::nullopt : std::optional<NameRecord>{it->second});
@@ -707,11 +780,21 @@ void State::Revert(const StateUndo& undo)
             m_reservations.erase(it->first);
         }
     }
+    for (auto it{undo.reservation_orders.rbegin()}; it != undo.reservation_orders.rend(); ++it) {
+        if (it->second) {
+            m_reservation_order.insert_or_assign(it->first, *it->second);
+        } else {
+            m_reservation_order.erase(it->first);
+        }
+    }
+    if (undo.next_reservation_order) m_next_reservation_order = *undo.next_reservation_order;
+    // Numbers given back first, then those the block gave dropped: a name registered and released in
+    // the same block has a number of the block's, which must not come back.
+    for (const auto& [seq, name] : undo.seqs) m_seq.emplace(seq, name);
     if (undo.next_seq) {
         m_seq.erase(m_seq.lower_bound(*undo.next_seq), m_seq.end());
         m_next_seq = *undo.next_seq;
     }
-    for (const auto& [seq, name] : undo.seqs) m_seq.emplace(seq, name);
 }
 
 } // namespace bitnames

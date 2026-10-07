@@ -362,7 +362,7 @@ BOOST_AUTO_TEST_CASE(release_takes_subnames)
     BOOST_REQUIRE(state.Names().contains(post));
 
     // Before the rule's height, the subnames stay (as on the test network until then).
-    params.release_subnames_height = 100;
+    params.audit_rules_height = 100;
     {
         State old_rules{state};
         StateUndo undo;
@@ -370,7 +370,7 @@ BOOST_AUTO_TEST_CASE(release_takes_subnames)
         BOOST_CHECK(!old_rules.Names().contains(HashName("core")));
         BOOST_CHECK(old_rules.Names().contains(blog));
     }
-    params.release_subnames_height = 0;
+    params.audit_rules_height = 0;
 
     // A release cannot keep one of the names it takes.
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({core_now, COutPoint{made_post.GetHash(), 0}}, 1, 0, Release{}, 41)}, 5, params, reason));
@@ -399,6 +399,92 @@ BOOST_AUTO_TEST_CASE(release_takes_subnames)
     BOOST_REQUIRE(back.ApplyTx(CTransaction{Tx({core_now}, 0, 0, Release{}, 42)}, 5, params, redo, reason));
     back.Revert(redo);
     BOOST_CHECK(back == before);
+}
+
+BOOST_AUTO_TEST_CASE(squatted_subname_gives_way)
+{
+    // A name registered by the hash of a subname (no text could hash to it) is a squat: it does not
+    // resolve as the subname, and gives way when the parent's holder makes the subname.
+    Consensus::BitNamesParams params;
+    State state;
+    std::string reason;
+    const COutPoint core{Registered(state, "core", {}, 10, params)};
+    const NameHash www{SubnameHash(HashName("core"), "www")};
+    // The squat: reserve and register the raw hash.
+    StateUndo undo;
+    const CMutableTransaction reserve{Tx({}, 0, 1, Reserve{ReservationCommitment(www, uint256{9})}, 90)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 3, params, undo, reason));
+    NameData squat_data;
+    squat_data.ipv4 = SocketV4{{6, 6, 6, 6}, 80};
+    const CMutableTransaction squat{Tx({COutPoint{reserve.GetHash(), 0}}, 1, 0, Register{www, uint256{9}, squat_data}, 91)};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{squat}, 4, params, undo, reason), reason);
+    BOOST_REQUIRE(state.Names().contains(www));
+    BOOST_CHECK_EQUAL(Resolve(state, "www.core.x", dns::A).rcode, dns::NXDOMAIN);
+    // Before the rule's height it holds the label.
+    RegisterSubname sub;
+    sub.label = "www";
+    sub.data.ipv4 = SocketV4{{198, 51, 100, 9}, 443};
+    params.audit_rules_height = 100;
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({core}, 2, 0, sub, 92)}, 5, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-name-taken");
+    params.audit_rules_height = 0;
+    const State before{state};
+    StateUndo made;
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({core}, 2, 0, sub, 92)}, 5, params, made, reason), reason);
+    BOOST_CHECK(state.Names().at(www).parent == HashName("core"));
+    BOOST_CHECK((Texts(Resolve(state, "www.core.x", dns::A)) == std::vector<std::string>{"A 198.51.100.9"}));
+    // The squatter's coin carries no name any more.
+    BOOST_CHECK(!state.Tokens().contains(COutPoint{squat.GetHash(), 0}));
+    state.Revert(made);
+    BOOST_CHECK(state == before);
+}
+
+BOOST_AUTO_TEST_CASE(oldest_reservation_reveals)
+{
+    // A copy of someone's reservation, made to register their name first once they reveal it, is younger
+    // than theirs and cannot reveal it.
+    Consensus::BitNamesParams params;
+    State state;
+    std::string reason;
+    StateUndo undo;
+    const NameHash name{HashName("prize")};
+    const uint256 nonce{77};
+    const uint256 commitment{ReservationCommitment(name, nonce)};
+    const CMutableTransaction mine{Tx({}, 0, 1, Reserve{commitment}, 1)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{mine}, 1, params, undo, reason));
+    const CMutableTransaction copy{Tx({}, 0, 1, Reserve{commitment}, 2)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{copy}, 2, params, undo, reason));
+    // The copier sees the name and nonce in the owner's registration, and races it.
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({COutPoint{copy.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 3)}, 3, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-not-first");
+    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({COutPoint{mine.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 4)}, 3, params, reason), reason);
+    // The order survives serialization, and undo.
+    DataStream stream{};
+    stream << state;
+    State read;
+    stream >> read;
+    BOOST_CHECK(read == state);
+    State reverted{state};
+    reverted.Revert(undo);
+    BOOST_CHECK(reverted == State{});
+}
+
+BOOST_AUTO_TEST_CASE(numbers_after_register_and_release_in_one_block)
+{
+    // A name registered and released in the same block: undone, its number does not come back.
+    Consensus::BitNamesParams params;
+    State state;
+    std::string reason;
+    const COutPoint core{Registered(state, "core", {}, 10, params)};
+    const State before{state};
+    StateUndo block;
+    RegisterSubname sub;
+    sub.label = "tmp";
+    const CMutableTransaction made{Tx({core}, 2, 0, sub, 50)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{made}, 5, params, block, reason));
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({COutPoint{made.GetHash(), 0}}, 0, 0, Release{}, 51)}, 5, params, block, reason), reason);
+    state.Revert(block);
+    BOOST_CHECK(state == before);
 }
 
 BOOST_AUTO_TEST_CASE(dns_resolution)

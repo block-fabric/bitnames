@@ -424,8 +424,14 @@ NameHash ParseNameArg(const UniValue& value, const State* state, const std::func
         NameHash at{HashName(labels.back())};
         bool found{known(at)};
         for (size_t i{labels.size() - 1}; found && i-- > 0;) {
+            const NameHash parent{at};
             at = SubnameHash(at, labels[i]);
             found = known(at);
+            // With the state at hand: only a subname of this very name (not a top-level name registered by its hash).
+            if (found && state) {
+                const auto& record{state->Names().at(at)};
+                found = record.parent == parent && record.label == labels[i];
+            }
         }
         if (found) return at;
     }
