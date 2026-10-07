@@ -397,6 +397,10 @@ struct StateUndo {
     template <typename Stream>
     void Serialize(Stream& s) const
     {
+        // The format from the audit's rules on: a first byte of 2, where the older format has the
+        // flag of next_seq (0 or 1). The undo data is followed by more in its record, so the end of
+        // the stream cannot tell the formats apart.
+        s << uint8_t{2};
         s << BN_OPT(next_seq);
         detail::WriteChanges(s, tokens);
         detail::WriteChanges(s, names);
@@ -408,17 +412,23 @@ struct StateUndo {
     template <typename Stream>
     void Unserialize(Stream& s)
     {
-        s >> BN_OPT(next_seq);
+        uint8_t first;
+        s >> first;
+        const bool with_orders{first == 2};
+        next_seq.reset();
+        if (with_orders) {
+            s >> BN_OPT(next_seq);
+        } else if (first != 0) {
+            s >> next_seq.emplace();
+        }
         detail::ReadChanges(s, tokens);
         detail::ReadChanges(s, names);
         detail::ReadChanges(s, reservations);
         s >> seqs;
-        // Undo data written before reservations had an order ends here.
+        // Undo data written before reservations had an order has none.
         reservation_orders.clear();
         next_reservation_order.reset();
-        if constexpr (requires { s.empty(); }) {
-            if (s.empty()) return;
-        }
+        if (!with_orders) return;
         detail::ReadChanges(s, reservation_orders);
         s >> BN_OPT(next_reservation_order);
     }
