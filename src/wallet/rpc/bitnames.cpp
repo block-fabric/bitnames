@@ -159,7 +159,8 @@ CTransactionRef SendBitNames(CWallet& wallet, Marker marker, const std::vector<C
     if (!res) throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, util::ErrorString(res).original);
     const CTransactionRef tx{res->tx};
     wallet.CommitTransaction(tx, /*replaces_txid=*/std::nullopt, /*comment=*/std::nullopt, /*comment_to=*/std::nullopt);
-    if (!wallet.chain().isInMempool(tx->GetHash())) {
+    // Not a false failure (and an abandoned transaction a retry would pay again) when a block took it already.
+    if (CommittedTransactionRefused(wallet, tx)) {
         wallet.AbandonTransaction(tx->GetHash());
         throw JSONRPCError(RPC_WALLET_ERROR, "The transaction was not accepted into the mempool (see the debug log for why)");
     }

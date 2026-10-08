@@ -73,6 +73,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "createsubname", 3, "data" },
     { "createsubname", 3, "paymailfee" },
     { "sendpaymail", 1, "amount" },
+    { "syncmainchain", 0, "allowdeepreorg" },
     { "setbmm", 0, "mine" },
     { "setbmm", 2, "always" },
     { "setbmm", 3, "amount" },
