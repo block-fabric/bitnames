@@ -342,8 +342,9 @@ public:
                        .message_start = {0x62, 0x6e, 0x6d, 0x02}, .default_port = 19955, .bech32_hrp = "tbn"});
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
-        // Releasing a name released only it until then; see BitNamesParams.
-        consensus.sidechain.bitnames.audit_rules_height = 3400;
+        // Releasing a name released only it until then; see BitNamesParams. The same height as the second
+        // audit's rules (set together at deploy): the first audit's rules never come after the second's.
+        consensus.sidechain.bitnames.audit_rules_height = 4526;
         consensus.sidechain.bitnames.reveal_depth = 3;
         consensus.sidechain.bitnames.audit2_height = 4526; // audit 2 rules on the test network: moved out while the third audit's fixes are made
         // The test network ran without it until then; see SidechainParams.
