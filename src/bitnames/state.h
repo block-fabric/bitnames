@@ -95,6 +95,16 @@ inline constexpr size_t MAX_TOKEN_OUTPUTS{64};
 inline constexpr size_t MAX_ICANN_NAMES{64};
 /** Longest ICANN domain name. */
 inline constexpr size_t MAX_ICANN_NAME_SIZE{253};
+/** From audit2_height: how many levels under its top-level name a subname is at most (blog.core is 1). */
+inline constexpr uint32_t MAX_SUBNAME_DEPTH{8};
+/**
+ * From audit2_height: how many names, at any depth, are under one name at most. Releasing a name
+ * releases them all, and the work of checking that (in the mempool, for each replacement, after
+ * every block, and in the block) grows with them: a thousand names, each with its record, its
+ * output and two index entries, is a few thousand reads of the store, and a tree that size costs
+ * whoever builds it a thousand transactions.
+ */
+inline constexpr uint32_t MAX_SUBNAMES{1000};
 
 struct SocketV4 {
     std::array<uint8_t, 4> ip{};
@@ -227,7 +237,9 @@ struct Release {
 /**
  * A subname of the name the transaction spends last, which the transaction carries on: a name of
  * its own, known by SubnameHash(parent, label), that the transaction gives to its last name output.
- * Only the owner of a name makes subnames of it; once made, a subname is its holder's.
+ * Only the owner of a name makes subnames of it; once made, only its holder updates it, moves it or
+ * makes subnames of it. It depends on its parent all the same: releasing the parent releases it
+ * (from audit_rules_height), and the next holder of the parent starts with no subnames.
  */
 struct RegisterSubname {
     static constexpr uint8_t KIND{6};
@@ -320,7 +332,26 @@ struct Stamped {
     friend bool operator==(const Stamped&, const Stamped&) = default;
 };
 
-/** A registered name: its data now and at every height since its registration. */
+/** The fields of the data of a name, as its history keys them. */
+enum class Field : uint8_t { COMMITMENT = 0, IPV4 = 1, IPV6 = 2, ENCRYPTION_KEY = 3, SIGNING_KEY = 4, PAYMAIL_FEE = 5, RECORDS = 6 };
+
+/** Calls `fn(field, value)` for each field of `data`, in the order of Field. */
+template <typename Data, typename Fn>
+void ForEachField(Data& data, Fn&& fn)
+{
+    fn(Field::COMMITMENT, data.commitment);
+    fn(Field::IPV4, data.ipv4);
+    fn(Field::IPV6, data.ipv6);
+    fn(Field::ENCRYPTION_KEY, data.encryption_key);
+    fn(Field::SIGNING_KEY, data.signing_key);
+    fn(Field::PAYMAIL_FEE, data.paymail_fee);
+    fn(Field::RECORDS, data.records);
+}
+
+/**
+ * A registered name, as it is now. Its earlier data is kept apart, one entry per value set (see
+ * State::DataAtHeight and State::History), so that an update reads and writes this much and no more.
+ */
 struct NameRecord {
     uint32_t seq{0};
     Txid registration;
@@ -328,6 +359,31 @@ struct NameRecord {
     bool icann{false};
     //! For ICANN names: the text, as the authority revealed it.
     std::string icann_name;
+    //! The data now.
+    NameData data;
+    //! The text of the name, if its registration made it public.
+    std::string text;
+    //! For a subname: its parent, and its label under it.
+    std::optional<NameHash> parent;
+    std::string label;
+    //! How many levels under a top-level name it is: 0 for a top-level name.
+    uint32_t depth{0};
+    //! How many names are under it, at any depth.
+    uint32_t descendants{0};
+
+    SERIALIZE_METHODS(NameRecord, obj)
+    {
+        READWRITE(obj.seq, obj.registration, obj.height, obj.icann, obj.icann_name, obj.data, BN_OPT(obj.data.records), obj.text,
+                  BN_OPT(obj.parent), obj.label, obj.depth, obj.descendants);
+    }
+    friend bool operator==(const NameRecord&, const NameRecord&) = default;
+
+    /** The data now. */
+    const NameData& Current() const { return data; }
+};
+
+/** Every value each field of a name has had, oldest first, with where it was set. */
+struct NameHistory {
     std::vector<Stamped<uint256>> commitment;
     std::vector<Stamped<SocketV4>> ipv4;
     std::vector<Stamped<SocketV6>> ipv6;
@@ -335,59 +391,25 @@ struct NameRecord {
     std::vector<Stamped<SigningKey>> signing_key;
     std::vector<Stamped<CAmount>> paymail_fee;
     std::vector<Stamped<std::string>> records;
-    //! The text of the name, if its registration made it public.
-    std::string text;
-    //! For a subname: its parent, and its label under it.
-    std::optional<NameHash> parent;
-    std::string label;
-
-    SERIALIZE_METHODS(NameRecord, obj)
-    {
-        READWRITE(obj.seq, obj.registration, obj.height, obj.icann, obj.icann_name, obj.commitment, obj.ipv4, obj.ipv6,
-                  obj.encryption_key, obj.signing_key, obj.paymail_fee, obj.records, obj.text, BN_OPT(obj.parent), obj.label);
-    }
-    friend bool operator==(const NameRecord&, const NameRecord&) = default;
-
-    /** The data now. */
-    NameData Current() const;
-    /** The data as it was at the end of the block at `height`; nullopt before the registration. */
-    std::optional<NameData> AtHeight(int height) const;
 };
 
-namespace detail {
-template <typename Stream, typename Key, typename Value>
-void WriteChanges(Stream& s, const std::vector<std::pair<Key, std::optional<Value>>>& changes)
-{
-    WriteCompactSize(s, changes.size());
-    for (const auto& [key, value] : changes) {
-        s << key << value.has_value();
-        if (value) s << *value;
-    }
-}
-template <typename Stream, typename Key, typename Value>
-void ReadChanges(Stream& s, std::vector<std::pair<Key, std::optional<Value>>>& changes)
-{
-    changes.clear();
-    const uint64_t count{ReadCompactSize(s)};
-    for (uint64_t i{0}; i < count; ++i) {
-        Key key;
-        bool has_value;
-        s >> key >> has_value;
-        std::optional<Value> value;
-        if (has_value) s >> value.emplace();
-        changes.emplace_back(std::move(key), std::move(value));
-    }
-}
-} // namespace detail
+/** A reservation not revealed yet: what it commits to, and the height of the block that made it. */
+struct ReservationRecord {
+    uint256 commitment;
+    int32_t height{0};
+    SERIALIZE_METHODS(ReservationRecord, obj) { READWRITE(obj.commitment, obj.height); }
+    friend bool operator==(const ReservationRecord&, const ReservationRecord&) = default;
+};
 
 /**
  * The names, on the store of the sidechain state (sidechain/store.h), one entry per key, so that
- * nothing the size of the registry is ever read, copied or written whole. Tables (the first byte of
- * the keys): 0x20 what outputs carry, 0x21 names, 0x22 reservations not revealed yet, 0x23 names by
- * number, 0x24 the order of reservations; single values 0x25 the next number, 0x26 the next order,
- * 0x2a and 0x2b how many names and reservations there are. Indexes, so that no rule reads a table
- * whole: 0x27 names by parent, 0x28 outputs by the name they carry, 0x29 reservations by commitment
- * then order.
+ * nothing the size of the registry, or of the history of a name, is ever read, copied or written
+ * whole. Tables (the first byte of the keys): 0x20 what outputs carry, 0x21 names as they are now,
+ * 0x22 reservations not revealed yet, 0x23 names by number, 0x24 the order of reservations, 0x2c the
+ * history of names (by number, field, height and place in the block, latest first); single values
+ * 0x25 the next number, 0x26 the next order, 0x2a and 0x2b how many names and reservations there
+ * are. Indexes, so that no rule reads a table whole: 0x27 names by parent, 0x28 outputs by the name
+ * they carry, 0x29 reservations by commitment, then height and order.
  *
  * What a block changes, the store's journal notes: the undo data of the block.
  */
@@ -413,7 +435,14 @@ public:
     std::optional<Token> GetToken(const COutPoint& outpoint) const;
     std::optional<NameRecord> GetName(const NameHash& name) const;
     bool HasName(const NameHash& name) const;
+    /** The commitment of a reservation not revealed yet. */
     std::optional<uint256> GetReservation(const Txid& id) const;
+    /** The height of the block that made a reservation not revealed yet. */
+    std::optional<int> ReservationHeight(const Txid& id) const;
+    /** The data of a name as it was at the end of the block at `height`; nullopt before its registration. */
+    std::optional<NameData> DataAtHeight(const NameRecord& record, int height) const;
+    /** Every value each field of a name has had. */
+    NameHistory History(const NameRecord& record) const;
     std::optional<NameHash> NameOfSeq(uint32_t seq) const;
     uint32_t NextSeq() const;
     uint64_t NameCount() const;
@@ -433,13 +462,20 @@ private:
     std::optional<Plan> MakePlan(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason) const;
     /** Add the descendants of `roots` to the names a plan releases, and the tokens of `roots` and of them to what it spends. @return roots and descendants */
     std::set<NameHash> ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const;
+    /** Add to a plan the names above `gone` (released or replaced names), with the names they lose counted out. */
+    void CountOut(Plan& plan, const std::set<NameHash>& gone) const;
     std::optional<uint64_t> OrderOf(const Txid& id) const;
 
     // Writes, with the indexes kept in step.
     sidechain::StoreOverlay& Writable() const;
     void SetToken(const COutPoint& outpoint, const std::optional<Token>& token);
     void SetName(const NameHash& name, const std::optional<NameRecord>& record);
-    void SetReservation(const Txid& id, const std::optional<uint256>& commitment);
+    void SetReservation(const Txid& id, const std::optional<ReservationRecord>& reservation);
+    std::optional<ReservationRecord> GetReservationRecord(const Txid& id) const;
+    /** Add a value of a field to the history of the name numbered `seq`, after those of its height. */
+    void AddHistory(uint32_t seq, Field field, int height, const sidechain::StoreBytes& stamped);
+    /** Erase the history of the name numbered `seq`. */
+    void EraseHistory(uint32_t seq);
     void SetOrder(const Txid& id, const std::optional<uint64_t>& order);
 
     const sidechain::StoreView* m_view;

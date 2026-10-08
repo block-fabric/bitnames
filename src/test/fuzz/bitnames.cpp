@@ -16,7 +16,11 @@
 #include <test/fuzz/fuzz.h>
 #include <test/util/setup_common.h>
 
+#include <algorithm>
 #include <cassert>
+#include <functional>
+#include <limits>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -62,7 +66,7 @@ std::set<sidechain::StoreBytes> KeysUnder(const sidechain::StoreView& view, uint
 }
 
 /** Every index, rebuilt from the tables, is the one in the store; the counts are the tables' sizes. */
-void CheckIndexes(const sidechain::StoreView& view)
+void CheckIndexes(const sidechain::StoreView& view, bool counted)
 {
     std::set<sidechain::StoreBytes> children, name_tokens, by_commitment;
     uint64_t names{0}, reservations{0};
@@ -86,10 +90,11 @@ void CheckIndexes(const sidechain::StoreView& view)
         return true;
     });
     const sidechain::Table<uint256, uint64_t> order{0x24};
-    sidechain::Table<uint256, uint256>{0x22}.ForEach(view, [&](const uint256& id, const uint256& commitment) {
+    sidechain::Table<uint256, ReservationRecord>{0x22}.ForEach(view, [&](const uint256& id, const ReservationRecord& reservation) {
         ++reservations;
         sidechain::StoreBytes key{0x29};
-        sidechain::KeyCodec<uint256>::Encode(key, commitment);
+        sidechain::KeyCodec<uint256>::Encode(key, reservation.commitment);
+        sidechain::KeyCodec<uint32_t>::Encode(key, static_cast<uint32_t>(reservation.height));
         sidechain::KeyCodec<uint64_t>::Encode(key, order.Get(view, id).value_or(0));
         sidechain::KeyCodec<uint256>::Encode(key, id);
         by_commitment.insert(key);
@@ -108,6 +113,47 @@ void CheckIndexes(const sidechain::StoreView& view)
             assert(!record || record->seq == seq);
         }
     }
+    // The history is that of names there are, by their numbers: an entry per field from the
+    // registration on, the latest of each the value the record has now.
+    std::map<uint32_t, std::set<uint8_t>> fields;
+    view.ForEach(sidechain::StoreBytes{0x2c}, [&](const sidechain::StoreBytes& key, const sidechain::StoreBytes&) {
+        assert(key.size() == 1 + 4 + 1 + 4 + 4);
+        std::span<const unsigned char> in{key};
+        in = in.subspan(1);
+        const uint32_t seq{sidechain::KeyCodec<uint32_t>::Decode(in)};
+        const auto name{state.NameOfSeq(seq)};
+        assert(name);
+        const auto record{state.GetName(*name)};
+        assert(record && record->seq == seq);
+        fields[seq].insert(key[5]);
+        return true;
+    });
+    size_t with_history{0};
+    state.ForEachName([&](const NameHash&, const NameRecord& record) {
+        assert(fields[record.seq].size() == 7);
+        ++with_history;
+        assert(state.DataAtHeight(record, std::numeric_limits<int>::max()) == record.Current());
+        return true;
+    });
+    assert(std::count_if(fields.begin(), fields.end(), [](const auto& f) { return !f.second.empty(); }) == static_cast<ptrdiff_t>(with_history));
+    // Each name counts the names under it, and knows how deep it is (unless releases before
+    // audit_rules_height left subnames behind, for the next holder of their parent).
+    if (counted) {
+        std::function<uint32_t(const NameHash&)> under{[&](const NameHash& name) {
+            uint32_t n{0};
+            for (const NameHash& child : state.ChildrenOf(name)) n += 1 + under(child);
+            return n;
+        }};
+        state.ForEachName([&](const NameHash& hash, const NameRecord& record) {
+            assert(record.descendants == under(hash));
+            if (record.parent) {
+                assert(record.depth == state.GetName(*record.parent)->depth + 1);
+            } else {
+                assert(record.depth == 0);
+            }
+            return true;
+        });
+    }
 }
 } // namespace
 
@@ -116,6 +162,8 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
     FuzzedDataProvider fdp{buffer.data(), buffer.size()};
     Consensus::BitNamesParams params;
     params.audit_rules_height = fdp.ConsumeIntegralInRange<int>(0, 20);
+    params.audit2_height = fdp.ConsumeIntegralInRange<int>(0, 20);
+    params.reveal_depth = fdp.ConsumeIntegralInRange<int>(0, 3);
     const std::vector<std::string> texts{"a", "b", "core", "blog", "x"};
     const std::vector<std::string> labels{"www", "blog", "a"};
 
@@ -161,7 +209,7 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
         }
         const sidechain::StoreUndo undo{block.TakeUndo()};
         block.MergeInto(cache);
-        CheckIndexes(cache);
+        CheckIndexes(cache, params.audit_rules_height == 0);
         // Undone, through serialization: exactly what was before the block.
         DataStream stream{};
         stream << undo;
@@ -170,6 +218,6 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
         sidechain::StoreOverlay reverted{cache, /*journal=*/false};
         reverted.Revert(read);
         assert(sidechain::StoreHash(reverted) == before);
-        CheckIndexes(reverted);
+        CheckIndexes(reverted, params.audit_rules_height == 0);
     }
 }

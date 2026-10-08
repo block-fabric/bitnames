@@ -55,7 +55,7 @@ UniValue NameToJSON(Chainstate& chainstate, const bitnames::State& state, const 
     obj.pushKV("registered", record.height);
     obj.pushKV("registration", record.registration.GetHex());
     if (record.icann) obj.pushKV("icann", record.icann_name);
-    const auto data{height ? record.AtHeight(*height) : std::optional{record.Current()}};
+    const auto data{height ? state.DataAtHeight(record, *height) : std::optional{record.Current()}};
     if (data) obj.pushKV("data", bitnames::DataToJSON(*data));
     obj.pushKV("owner", OwnerToJSON(chainstate, state, name));
     return obj;
@@ -171,7 +171,7 @@ RPCMethod getnamehistory()
     const bitnames::NameHash name{bitnames::ParseNameArg(request.params[0], &state)};
     const auto found{state.GetName(name)};
     if (!found) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such name is registered");
-    const bitnames::NameRecord record{*found};
+    const bitnames::NameHistory record{state.History(*found)};
     UniValue result(UniValue::VOBJ);
     const auto add{[&](const std::string& field, const auto& history, const auto& format) {
         UniValue entries(UniValue::VARR);

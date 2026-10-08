@@ -86,13 +86,20 @@ public:
     {
         // The table itself (0x22, by the reservation's transaction).
         std::map<Txid, uint256> all;
-        sidechain::Table<uint256, uint256>{0x22}.ForEach(*m_store, [&](const uint256& id, const uint256& c) {
-            all.emplace(Txid::FromUint256(id), c);
+        sidechain::Table<uint256, ReservationRecord>{0x22}.ForEach(*m_store, [&](const uint256& id, const ReservationRecord& r) {
+            all.emplace(Txid::FromUint256(id), r.commitment);
             return true;
         });
         return all;
     }
     std::optional<NameHash> NameOfSeq(uint32_t seq) const { return View().NameOfSeq(seq); }
+    /** How many entries a table has. */
+    size_t EntriesUnder(uint8_t table) const
+    {
+        size_t n{0};
+        m_store->ForEach(sidechain::StoreBytes{table}, [&](const sidechain::StoreBytes&, const sidechain::StoreBytes&) { return ++n, true; });
+        return n;
+    }
     uint32_t NextSeq() const { return View().NextSeq(); }
     friend bool operator==(const TState& a, const TState& b) { return sidechain::StoreHash(*a.m_store) == sidechain::StoreHash(*b.m_store); }
 
@@ -258,8 +265,8 @@ BOOST_AUTO_TEST_CASE(updates_keep_their_history)
     const NameRecord record{state.Names().at(name)};
     BOOST_CHECK(!record.Current().paymail_fee);
     BOOST_CHECK(record.Current().commitment == uint256{3});
-    BOOST_CHECK(record.AtHeight(2)->paymail_fee == 500);
-    BOOST_CHECK(!record.AtHeight(1));
+    BOOST_CHECK(state.View().DataAtHeight(record, 2)->paymail_fee == 500);
+    BOOST_CHECK(!state.View().DataAtHeight(record, 1));
 
     // The undo survives serialization and restores the state.
     DataStream stream{};
@@ -268,6 +275,80 @@ BOOST_AUTO_TEST_CASE(updates_keep_their_history)
     stream >> read;
     state.Revert(read);
     BOOST_CHECK(state == before);
+}
+
+namespace {
+COutPoint Registered(TState& state, const std::string& text, NameData data, uint8_t salt, const Consensus::BitNamesParams& params);
+} // namespace
+
+BOOST_AUTO_TEST_CASE(history_kept_apart)
+{
+    // The history of a name is kept apart from its record, one entry per value: an update reads and
+    // writes the record as it is now and one entry per field it changes, however long the history.
+    // The data at every height, and the history, are what keeping every value in the record gave.
+    Consensus::BitNamesParams params;
+    TState state;
+    TUndo undo;
+    std::string reason;
+    const NameHash name{HashName("satoshi")};
+    const uint256 nonce{9};
+    const CMutableTransaction reserve{Tx({}, 0, 1, Reserve{ReservationCommitment(name, nonce)}, 1)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 1, params, undo, reason));
+    NameData data;
+    data.paymail_fee = 1;
+    const CMutableTransaction reg{Tx({COutPoint{reserve.GetHash(), 0}}, 1, 0, Register{name, nonce, data}, 2)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reg}, 2, params, undo, reason));
+    COutPoint holder{reg.GetHash(), 0};
+    const size_t record_size{sidechain::EncodeValue(state.Names().at(name)).size()};
+
+    // The model: every value of the fee, with its height, in order.
+    std::vector<std::pair<int, std::optional<CAmount>>> model{{2, 1}};
+    uint8_t salt{10};
+    for (int height{3}; height <= 40; ++height) {
+        // Two updates in some blocks: the second, spending the first's output, is the later.
+        for (int i{0}; i < (height % 3 == 0 ? 2 : 1); ++i) {
+            NameUpdates updates;
+            const bool remove{height % 7 == 0 && i == 0};
+            updates.paymail_fee.kind = remove ? UpdateKind::DELETE : UpdateKind::SET;
+            if (!remove) updates.paymail_fee.value = height * 10 + i;
+            const CMutableTransaction tx{Tx({holder}, 1, 0, UpdateName{updates}, ++salt)};
+            BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, height, params, undo, reason), reason);
+            holder = COutPoint{tx.GetHash(), 0};
+            model.emplace_back(height, updates.paymail_fee.value);
+        }
+    }
+    const NameRecord record{state.Names().at(name)};
+    // The record is as large as it was after the registration.
+    BOOST_CHECK_EQUAL(sidechain::EncodeValue(record).size(), record_size);
+    BOOST_CHECK(record.Current().paymail_fee == model.back().second);
+    BOOST_CHECK(!state.View().DataAtHeight(record, 1));
+    for (int at{2}; at <= 45; ++at) {
+        std::optional<CAmount> expected;
+        for (const auto& [h, fee] : model) {
+            if (h <= at) expected = fee;
+        }
+        BOOST_CHECK_MESSAGE(state.View().DataAtHeight(record, at)->paymail_fee == expected, at);
+        BOOST_CHECK(!state.View().DataAtHeight(record, at)->ipv4);
+    }
+    const NameHistory history{state.View().History(record)};
+    BOOST_REQUIRE_EQUAL(history.paymail_fee.size(), model.size());
+    for (size_t i{0}; i < model.size(); ++i) {
+        BOOST_CHECK_EQUAL(history.paymail_fee[i].height, model[i].first);
+        BOOST_CHECK(history.paymail_fee[i].value == model[i].second);
+    }
+    // The fields never set have their registration's entry.
+    BOOST_CHECK_EQUAL(history.ipv4.size(), 1U);
+    BOOST_CHECK(!history.ipv4[0].value);
+
+    // Released, the name goes with its history: registered again, it starts anew.
+    TUndo released;
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({holder}, 0, 0, Release{}, ++salt)}, 41, params, released, reason), reason);
+    BOOST_CHECK(!state.Names().contains(name));
+    BOOST_CHECK_EQUAL(state.EntriesUnder(0x2c), 0U);
+    const COutPoint again{Registered(state, "satoshi", {}, 60, params)};
+    (void)again;
+    BOOST_CHECK_EQUAL(state.View().History(state.Names().at(name)).paymail_fee.size(), 1U);
+    BOOST_CHECK_EQUAL(state.EntriesUnder(0x2c), 7U);
 }
 
 BOOST_AUTO_TEST_CASE(icann_names)
@@ -678,5 +759,133 @@ BOOST_AUTO_TEST_CASE(dns_resolution)
     BOOST_CHECK((std::vector<unsigned char>(response.end() - 4, response.end()) == std::vector<unsigned char>{203, 0, 113, 7}));
 }
 
+BOOST_AUTO_TEST_CASE(reveal_only_when_deep)
+{
+    // Whoever makes a block sees the name and nonce of every registration waiting for it. Before the
+    // rule, it could reserve the name under a nonce of its own and register it in that very block,
+    // ahead of the one it saw: only the mempool kept a reservation from being revealed in its block.
+    Consensus::BitNamesParams params;
+    params.reveal_depth = 6;
+    TState state;
+    TUndo undo;
+    std::string reason;
+    const NameHash name{HashName("victim")};
+    const uint256 thief_nonce{66};
+    const CMutableTransaction reserve{Tx({}, 0, 1, Reserve{ReservationCommitment(name, thief_nonce)}, 1)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 10, params, undo, reason));
+    const CMutableTransaction reg{Tx({COutPoint{reserve.GetHash(), 0}}, 1, 0, Register{name, thief_nonce, {}}, 2)};
+    // In the same block, and in any block until it is reveal_depth deep: refused.
+    for (int height{10}; height < 16; ++height) {
+        BOOST_CHECK(!state.CheckTx(CTransaction{reg}, height, params, reason));
+        BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-too-young");
+    }
+    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{reg}, 16, params, reason), reason);
+    // Moved to another output, a reservation keeps its age.
+    const CMutableTransaction moved{Tx({COutPoint{reserve.GetHash(), 0}}, 0, 1, std::nullopt, 3)};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{moved}, 12, params, undo, reason), reason);
+    const CMutableTransaction reg_moved{Tx({COutPoint{moved.GetHash(), 0}}, 1, 0, Register{name, thief_nonce, {}}, 4)};
+    BOOST_CHECK(!state.CheckTx(CTransaction{reg_moved}, 15, params, reason));
+    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{reg_moved}, 16, params, reason), reason);
+    // Before the rule's height, in the same block.
+    params.audit2_height = 100;
+    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{reg_moved}, 12, params, reason), reason);
+}
+
+BOOST_AUTO_TEST_CASE(copies_in_the_same_block_do_not_stop_a_reveal)
+{
+    // A reservation's commitment is public in the mempool. Whoever made a block could put a copy of
+    // it ahead of it in the block: first in the chain's order, the copy stopped the original for
+    // good. From audit2_height only a copy from an earlier block stops it.
+    Consensus::BitNamesParams params;
+    TState state;
+    TUndo undo;
+    std::string reason;
+    const NameHash name{HashName("prize")};
+    const uint256 nonce{77};
+    const uint256 commitment{ReservationCommitment(name, nonce)};
+    const CMutableTransaction copy{Tx({}, 0, 1, Reserve{commitment}, 1)};
+    const CMutableTransaction mine{Tx({}, 0, 1, Reserve{commitment}, 2)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{copy}, 5, params, undo, reason));
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{mine}, 5, params, undo, reason));
+    const CMutableTransaction reg{Tx({COutPoint{mine.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 3)};
+    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{reg}, 6, params, reason), reason);
+    // Before the rule: the copy, first in the block, stops it.
+    params.audit2_height = 100;
+    BOOST_CHECK(!state.CheckTx(CTransaction{reg}, 6, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-not-first");
+    params.audit2_height = 0;
+    // A copy from an earlier block still stops a later reservation (a copy made after seeing it
+    // revealed is always later).
+    const CMutableTransaction late{Tx({}, 0, 1, Reserve{commitment}, 4)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{late}, 7, params, undo, reason));
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({COutPoint{late.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 5)}, 9, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-not-first");
+    TState reverted{state};
+    reverted.Revert(undo);
+    BOOST_CHECK(reverted == TState{});
+}
+
+BOOST_AUTO_TEST_CASE(subname_bounds)
+{
+    // Releasing a name releases everything under it: from audit2_height a name has at most
+    // MAX_SUBNAMES names under it, MAX_SUBNAME_DEPTH levels deep, so that this is bounded work.
+    Consensus::BitNamesParams params;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    COutPoint top{Registered(state, "core", {}, 10, params)};
+    const NameHash core{HashName("core")};
+    // A chain of subnames, each under the last, as deep as allowed.
+    COutPoint at{top};
+    NameHash parent{core};
+    uint8_t salt{20};
+    std::vector<NameHash> chain;
+    for (uint32_t depth{1}; depth <= MAX_SUBNAME_DEPTH; ++depth) {
+        const CMutableTransaction tx{Tx({at}, 2, 0, RegisterSubname{"l", {}}, ++salt)};
+        BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, 3, params, undo, reason), reason);
+        if (depth == 1) top = COutPoint{tx.GetHash(), 0};
+        parent = SubnameHash(parent, "l");
+        chain.push_back(parent);
+        at = COutPoint{tx.GetHash(), 1};
+        BOOST_CHECK_EQUAL(state.Names().at(parent).depth, depth);
+    }
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({at}, 2, 0, RegisterSubname{"l", {}}, ++salt)}, 3, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-subname-too-deep");
+    params.audit2_height = 100;
+    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({at}, 2, 0, RegisterSubname{"l", {}}, ++salt)}, 3, params, reason), reason);
+    params.audit2_height = 0;
+    // Each name counts the names under it.
+    BOOST_CHECK_EQUAL(state.Names().at(core).descendants, MAX_SUBNAME_DEPTH);
+    BOOST_CHECK_EQUAL(state.Names().at(chain[2]).descendants, MAX_SUBNAME_DEPTH - 3);
+
+    // Many subnames right under the top-level name, up to the bound.
+    uint32_t made{MAX_SUBNAME_DEPTH};
+    for (uint32_t i{0}; made < MAX_SUBNAMES; ++i, ++made) {
+        const CMutableTransaction tx{Tx({top}, 2, 0, RegisterSubname{strprintf("n%u", i), {}}, static_cast<uint8_t>(i))};
+        BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, 4, params, undo, reason), reason);
+        top = COutPoint{tx.GetHash(), 0};
+    }
+    BOOST_CHECK_EQUAL(state.Names().at(core).descendants, MAX_SUBNAMES);
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({top}, 2, 0, RegisterSubname{"over", {}}, 1)}, 4, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-bn-too-many-subnames");
+    // Under a subname too: the top-level name counts the whole tree.
+    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({at}, 2, 0, RegisterSubname{"m", {}}, 2)}, 4, params, reason));
+    // Released, a part of the tree is counted out of every name above it, and there is room again.
+    const NameHash third_level{chain[1]};
+    TUndo released;
+    // The holder of chain[1] (at depth 2) releases it: it and the 6 under it go.
+    const NameRecord before_release{state.Names().at(core)};
+    COutPoint third_coin;
+    for (const auto& [outpoint, token] : state.Tokens()) {
+        if (token.id == third_level) third_coin = outpoint;
+    }
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({third_coin}, 0, 0, Release{}, 3)}, 5, params, released, reason), reason);
+    BOOST_CHECK_EQUAL(state.Names().at(core).descendants, MAX_SUBNAMES - (MAX_SUBNAME_DEPTH - 1));
+    BOOST_CHECK_EQUAL(state.Names().at(chain[0]).descendants, 0U);
+    BOOST_CHECK(!state.Names().contains(chain.back()));
+    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({top}, 2, 0, RegisterSubname{"over", {}}, 1)}, 6, params, reason), reason);
+    state.Revert(released);
+    BOOST_CHECK(state.Names().at(core) == before_release);
+}
 
 BOOST_AUTO_TEST_SUITE_END()

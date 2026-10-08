@@ -14,10 +14,12 @@ namespace drivechain {
 namespace {
 
 constexpr uint8_t DB_BLOCK{'U'};
-//! The sidechain database, without the sidechain state (now in its store): a node with the
-//! earlier format, under 'S', rebuilds the state from its blocks.
+//! The sidechain database, without the sidechain state (now in its store): a node with an
+//! earlier format rebuilds the state from its blocks. 'S': before the store; 's': before BitNames
+//! kept the history of a name apart from its record (and the height of each reservation).
 constexpr uint8_t DB_STATE_OLD{'S'};
-constexpr uint8_t DB_STATE{'s'};
+constexpr uint8_t DB_STATE_BEFORE_NAME_HISTORY{'s'};
+constexpr uint8_t DB_STATE{'n'};
 //! The entries of the store of the sidechain state: 'T', the chainstate's name, 0, then the key.
 constexpr uint8_t DB_SIDE_STORE{'T'};
 constexpr uint8_t DB_DEPOSIT{'D'};
@@ -108,6 +110,7 @@ void Database::WipeState(const std::string& chainstate, const sidechain::DbStore
     CDBBatch batch{m_db};
     batch.Erase(std::make_pair(DB_STATE, chainstate));
     batch.Erase(std::make_pair(DB_STATE_OLD, chainstate));
+    batch.Erase(std::make_pair(DB_STATE_BEFORE_NAME_HISTORY, chainstate));
     side_db.Wipe(batch);
     m_db.WriteBatch(batch, /*fSync=*/true);
 }

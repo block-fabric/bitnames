@@ -236,6 +236,8 @@ public:
         // This chain is a sidechain of the Chains mainchain.
         MakeSidechain({.slot = 3, .genesis_message = "BitNames: names that point to keys, addresses and data, owned like coins", .genesis_time = 1791216000,
                        .message_start = {0x62, 0x6e, 0x6d, 0x01}, .default_port = 9955, .bech32_hrp = "bn"});
+        consensus.sidechain.bitnames.reveal_depth = 6;
+        consensus.sidechain.bitnames.audit2_height = 0;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -339,6 +341,8 @@ public:
         consensus.sidechain.bundle_retry_delay = 20;
         // Releasing a name released only it until then; see BitNamesParams.
         consensus.sidechain.bitnames.audit_rules_height = 3400;
+        consensus.sidechain.bitnames.reveal_depth = 3;
+        consensus.sidechain.bitnames.audit2_height = 999999999; // AUDIT2_TESTNET: set at deploy
         // The test network ran without it until then; see SidechainParams.
         consensus.sidechain.single_bundle_height = 3400;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
@@ -449,6 +453,8 @@ public:
         // This chain is a sidechain of the Chains signet. Its own blocks are not signed.
         MakeSidechain({.slot = 3, .genesis_message = "BitNames signet", .genesis_time = 1791216000,
                        .message_start = {0x62, 0x6e, 0x6d, 0x03}, .default_port = 39955, .bech32_hrp = "tbn"});
+        consensus.sidechain.bitnames.reveal_depth = 3;
+        consensus.sidechain.bitnames.audit2_height = 0;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -511,6 +517,8 @@ public:
             // A sidechain has no sidechains of its own.
             consensus.drivechain.max_sidechains = 0;
             consensus.coinbase_maturity = 0;
+            consensus.sidechain.bitnames.reveal_depth = 2;
+            consensus.sidechain.bitnames.audit2_height = 0;
         }
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;

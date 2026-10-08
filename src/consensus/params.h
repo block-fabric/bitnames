@@ -102,6 +102,21 @@ struct BitNamesParams {
      *   else's, made to register the name first once they reveal it, never is.
      */
     int audit_rules_height{0};
+    /**
+     * From this height, the rules of the second audit of October 2026:
+     * - a reservation is revealed only once it is reveal_depth blocks deep: whoever makes a block
+     *   sees every registration waiting for it, and could otherwise reserve the same name under a
+     *   nonce of its own and register it in its own block, ahead of the one it saw;
+     * - of the reservations of one commitment, one made in an earlier block than the one revealed
+     *   stops it, one made in the same block does not (it stopped it when it came first in the
+     *   chain's order: whoever made the block could put a copy ahead of any reservation it saw);
+     * - a subname is at most bitnames::MAX_SUBNAME_DEPTH levels under its top-level name, and a
+     *   name has at most bitnames::MAX_SUBNAMES names under it, so that releasing a name (which
+     *   releases them all) is bounded work.
+     */
+    int audit2_height{0};
+    /** From audit2_height: a registration in block h reveals a reservation made in block r only if h - r >= reveal_depth. */
+    int reveal_depth{1};
 };
 
 /**
