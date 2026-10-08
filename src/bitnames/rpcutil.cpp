@@ -474,6 +474,10 @@ std::optional<NameHash> ResolveNameText(const std::string& text, const NameLooku
         return fail(strprintf("A name is lower-case letters (a-z), digits, - and _, its labels separated by dots: %s is not. A name registered by the hash of another text is given by its hash (\"0x\" and 64 hex digits)", text));
     }
     if (labels.size() == 1) return HashName(text);
+    // An ICANN name has dots: the authority vouches for its text. It goes before a subname of the same
+    // text, which the holder of the name of its last label ("com") could make to stand for any ICANN
+    // name under it.
+    if (const auto record{lookup(HashName(text))}; record && record->icann && record->icann_name == text) return HashName(text);
     // A subname: down from the last label, each step a subname of the one above (not a top-level
     // name registered by its hash).
     NameHash at{HashName(labels.back())};
@@ -485,8 +489,6 @@ std::optional<NameHash> ResolveNameText(const std::string& text, const NameLooku
         found = record && record->parent == parent && record->label == labels[i];
     }
     if (found) return at;
-    // An ICANN name has dots: the authority vouches for its text.
-    if (const auto record{lookup(HashName(text))}; record && record->icann && record->icann_name == text) return HashName(text);
     // Never the name whose hash is that of the dotted text: anyone can register a name by any hash,
     // and what is sent to "pay.shop" would go to it.
     return fail(strprintf("No such subname: %s (a name with dots is a subname, found from its last label down; a name registered by the hash of a text with dots is given by its hash)", text));

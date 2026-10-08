@@ -38,8 +38,9 @@ using SeqLookup = std::function<std::optional<NameHash>(uint32_t)>;
  * where `by_seq` is given: "1739-0029" is a text like any other). Text is of the characters names
  * are made of (IsGoodNameText), in labels separated by dots: anything else (upper case, a look-alike
  * of another script) is an error, never the name of the hash of that text, which anyone can register.
- * Text with dots is a subname ("blog.core"), found from its last label down, each step a subname of
- * the one above, or an ICANN name of that text. The node's commands, the wallet's and DNS delegations
+ * Text with dots is an ICANN name of that text, if there is one (it goes first: the holder of "com"
+ * cannot stand for example.com), else a subname ("blog.core"), found from its last label down, each
+ * step a subname of the one above. The node's commands, the wallet's and DNS delegations
  * all read names this way. Nullopt, with why in `error`, if the text names nothing.
  */
 std::optional<NameHash> ResolveNameText(const std::string& text, const NameLookup& lookup, const SeqLookup& by_seq, std::string& error);

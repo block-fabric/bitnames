@@ -399,6 +399,17 @@ BOOST_AUTO_TEST_CASE(icann_names)
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, 3, params, block, reason), reason);
     BOOST_CHECK(state.Names().at(name).icann);
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({}, 0, 0, icann, 6)}, 4, params, reason));
+    // The holder of "com" makes the subname example.com: the text is still the ICANN name.
+    {
+        TState shadowed{state};
+        TUndo u;
+        const COutPoint com{Registered(shadowed, "com", {}, 40, params)};
+        BOOST_REQUIRE_MESSAGE(shadowed.ApplyTx(CTransaction{Tx({com}, 2, 0, RegisterSubname{"example", {}}, 41)}, 4, params, u, reason), reason);
+        BOOST_REQUIRE(shadowed.Names().contains(SubnameHash(HashName("com"), "example")));
+        BOOST_CHECK(ParseNameArg(UniValue{"example.com"}, shadowed.View()) == name);
+        // The subname, by its hash.
+        BOOST_CHECK(ParseNameArg(UniValue{"0x" + SubnameHash(HashName("com"), "example").GetHex()}, shadowed.View()) == SubnameHash(HashName("com"), "example"));
+    }
     state.Revert(block);
     BOOST_CHECK(state == before);
 }
