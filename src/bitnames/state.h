@@ -456,6 +456,8 @@ public:
     /** Every value each field of a name has had. */
     NameHistory History(const NameRecord& record) const;
     std::optional<NameHash> NameOfSeq(uint32_t seq) const;
+    /** The numbers names have, from `from` on, in order, skipping those of released names, until `fn` returns false. */
+    void ForEachSeq(uint32_t from, const std::function<bool(uint32_t, const NameHash&)>& fn) const;
     uint32_t NextSeq() const;
     uint64_t NameCount() const;
     uint64_t ReservationCount() const;

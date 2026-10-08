@@ -573,6 +573,7 @@ void State::EraseHistory(uint32_t seq)
 }
 std::optional<NameHash> State::NameOfSeq(uint32_t seq) const { return SEQ.Get(*m_view, seq); }
 uint32_t State::NextSeq() const { return NEXT_SEQ.Get(*m_view); }
+void State::ForEachSeq(uint32_t from, const std::function<bool(uint32_t, const NameHash&)>& fn) const { SEQ.ForEach(*m_view, fn, from); }
 uint64_t State::NameCount() const { return NAME_COUNT.Get(*m_view); }
 uint64_t State::ReservationCount() const { return RESERVATION_COUNT.Get(*m_view); }
 std::optional<uint64_t> State::OrderOf(const Txid& id) const { return ORDER.Get(*m_view, id.ToUint256()); }

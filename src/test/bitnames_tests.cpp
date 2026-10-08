@@ -1291,4 +1291,25 @@ BOOST_AUTO_TEST_CASE(names_given_by_text_number_or_hash)
     BOOST_CHECK(ParseNameArg(UniValue{"#" + FormatSeq(seq)}, lookup, [&](uint32_t n) { return view.NameOfSeq(n); }) == HashName("shop"));
 }
 
+BOOST_AUTO_TEST_CASE(numbers_skip_released_names)
+{
+    // listnames walks the numbers names have, not every number given.
+    Consensus::BitNamesParams params;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    Registered(state, "a", {}, 10, params);
+    const COutPoint b{Registered(state, "b", {}, 20, params)};
+    Registered(state, "c", {}, 30, params);
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({b}, 0, 0, Release{}, 40)}, 3, params, undo, reason), reason);
+    const auto seqs{[&](uint32_t from) {
+        std::vector<uint32_t> out;
+        state.View().ForEachSeq(from, [&](uint32_t seq, const NameHash&) { out.push_back(seq); return true; });
+        return out;
+    }};
+    BOOST_CHECK((seqs(0) == std::vector<uint32_t>{0, 2}));
+    BOOST_CHECK((seqs(1) == std::vector<uint32_t>{2}));
+    BOOST_CHECK(seqs(3).empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

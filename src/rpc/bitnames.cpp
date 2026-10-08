@@ -132,14 +132,16 @@ RPCMethod listnames()
     UniValue result(UniValue::VARR);
     const std::optional<std::string> match{request.params[2].isNull() ? std::nullopt : std::optional{ToLower(request.params[2].get_str())}};
     int skipped{0};
-    for (uint32_t seq{0}; seq < state.NextSeq() && result.size() < static_cast<size_t>(count); ++seq) {
-        const auto name{state.NameOfSeq(seq)};
-        const auto record{name ? state.GetName(*name) : std::nullopt};
-        if (!record) continue;
-        if (match && ToLower(bitnames::FullText(state, *record)).find(*match) == std::string::npos) continue;
-        if (skipped++ < skip) continue;
-        result.push_back(NameToJSON(chainstate, state, *name, *record, std::nullopt));
-    }
+    // Through the numbers names have: those of released names are not there to step over.
+    state.ForEachSeq(0, [&](uint32_t, const bitnames::NameHash& name) {
+        if (result.size() >= static_cast<size_t>(count)) return false;
+        const auto record{state.GetName(name)};
+        if (!record) return true;
+        if (match && ToLower(bitnames::FullText(state, *record)).find(*match) == std::string::npos) return true;
+        if (skipped++ < skip) return true;
+        result.push_back(NameToJSON(chainstate, state, name, *record, std::nullopt));
+        return true;
+    });
     return result;
 },
     };
@@ -190,6 +192,10 @@ RPCMethod getnamehistory()
     add("encryptionkey", record.encryption_key, [](const bitnames::EncryptionKey& v) { return UniValue{HexStr(v)}; });
     add("signingkey", record.signing_key, [](const bitnames::SigningKey& v) { return UniValue{HexStr(v)}; });
     add("paymailfee", record.paymail_fee, [](const CAmount& v) { return ValueFromAmount(v); });
+    add("records", record.records, [](const std::string& v) {
+        UniValue records;
+        return records.read(v) ? records : UniValue{v};
+    });
     return result;
 },
     };
