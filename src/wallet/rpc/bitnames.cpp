@@ -438,16 +438,18 @@ RPCMethod transfername()
 {
     return RPCMethod{
         "transfername",
-        "Give a name of this wallet to someone else: the address receives the output that carries it." +
+        "Give a name of this wallet to someone else: the address receives the output that carries it. By default its\n"
+        "encryption key, signing key and paymail fee are deleted in the same transaction: they are keys of this wallet." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, or the hash of the name"},
             {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address of the new owner"},
-            {"clearkeys", RPCArg::Type::BOOL, RPCArg::Default{false}, "Delete the encryption key, the signing key and the paymail fee of the name in the same transaction: they are\n"
-                "keys of this wallet, so messages to the name would still come here, and this wallet could still sign as it"},
+            {"clearkeys", RPCArg::Type::BOOL, RPCArg::Default{true}, "Delete the encryption key, the signing key and the paymail fee of the name in the same transaction. false keeps\n"
+                "them: they are keys of this wallet, so messages and paymail to the name would still come here, and this wallet\n"
+                "could still sign as the name, until the new owner changes them (only for a name given to another wallet of yours)"},
         },
         RPCResult{RPCResult::Type::STR_HEX, "", "The transaction"},
-        RPCExamples{HelpExampleCli("transfername", "\"satoshi\" \"address\"") + HelpExampleCli("transfername", "\"satoshi\" \"address\" true")},
+        RPCExamples{HelpExampleCli("transfername", "\"satoshi\" \"address\"") + HelpExampleCli("transfername", "\"satoshi\" \"address\" false")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
     const auto pwallet{ReadyWallet(request)};
@@ -458,7 +460,7 @@ RPCMethod transfername()
     const auto owned{OwnedName(*pwallet, hash)};
     if (!owned) NotHeld(*pwallet, hash);
     Marker marker;
-    if (!request.params[2].isNull() && request.params[2].get_bool()) {
+    if (request.params[2].isNull() || request.params[2].get_bool()) {
         // An update of the name, given on in the same transaction (the name updated is the one spent).
         const bitnames::NameData data{CurrentData(*pwallet, hash)};
         bitnames::NameUpdates updates;

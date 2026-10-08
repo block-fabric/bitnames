@@ -58,9 +58,11 @@ server for the `.x` domain.
   with, the paymail fee, and DNS records. Every value is kept with the transaction and height that
   set it: `getname <name> <height>` gives the data of a name at any height, `getnamehistory` all
   its values, its records included.
-- **Giving a name on.** `transfername <name> <address> true` also deletes, in the same transaction,
+- **Giving a name on.** `transfername <name> <address>` also deletes, in the same transaction,
   the encryption key, the signing key and the paymail fee of the name: they are keys of the wallet
-  that gives it, which would still receive the name's messages and sign as it. The window asks.
+  that gives it, which would still receive the name's messages and sign as it. `false` as a third
+  argument keeps them (for a name moved to another wallet of the same owner). The window asks, with
+  deleting them checked.
 - **Subnames.** The owner of `core` can make `blog.core` and give it to any address
   (`createsubname core blog <address>`). A subname is a name of its own: its holder sets its data
   and records, gives it on, and makes subnames of it. On the chain a subname is known by SHA-256 of

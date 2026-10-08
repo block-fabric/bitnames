@@ -186,9 +186,12 @@ class BitNamesTest(SidechainTest):
 
         self.log.info("A name is given to someone else")
         new_owner = other.getnewaddress()
+        assert "false keeps" in side.help("transfername")
         side.transfername("satoshi", new_owner)
         self.mine_txs()
         assert_equal(side.getname("satoshi")["owner"]["address"], new_owner)
+        # The paymail fee went with the keys of this wallet, by default.
+        assert "paymailfee" not in side.getname("satoshi")["data"]
         assert "satoshi" not in self.names(side)
         assert info["namehash"] in self.names(other)
         other.updatename("0x" + info["namehash"], {"paymailfee": None})
