@@ -434,12 +434,12 @@ const sidechain::Table<uint32_t, uint256> SEQ{0x23};
 const sidechain::Table<uint256, uint64_t> ORDER{0x24};
 const sidechain::Cell<uint32_t> NEXT_SEQ{0x25, 0};
 const sidechain::Cell<uint64_t> NEXT_ORDER{0x26, 1};
-constexpr uint8_t CHILDREN{0x27};
-constexpr uint8_t NAME_TOKENS{0x28};
-constexpr uint8_t BY_COMMITMENT{0x29};
+const sidechain::TableId CHILDREN{0x27};
+const sidechain::TableId NAME_TOKENS{0x28};
+const sidechain::TableId BY_COMMITMENT{0x29};
 const sidechain::Cell<uint64_t> NAME_COUNT{0x2a, 0};
 const sidechain::Cell<uint64_t> RESERVATION_COUNT{0x2b, 0};
-constexpr uint8_t HISTORY{0x2c};
+const sidechain::TableId HISTORY{0x2c};
 
 sidechain::StoreBytes ChildKey(const uint256& parent, const uint256& child)
 {

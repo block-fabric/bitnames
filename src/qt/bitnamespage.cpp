@@ -5,6 +5,7 @@
 #include <qt/bitnamespage.h>
 
 #include <qt/clientmodel.h>
+#include <qt/itemviews.h>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -16,7 +17,6 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
-#include <QInputMethodEvent>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -86,53 +86,27 @@ QString PendingKey(const QString& wallet) { return QStringLiteral("BitNames/pend
 const QStringList RECORD_TYPES{QStringLiteral("A"), QStringLiteral("AAAA"), QStringLiteral("CNAME"), QStringLiteral("TXT"), QStringLiteral("MX"),
                                QStringLiteral("SRV"), QStringLiteral("NS"), QStringLiteral("TLSA"), QStringLiteral("DELEGATE")};
 
-/**
- * Item views that leave input method events to their editors. Under Wayland (WSL), an input method
- * event that reaches a view starts an edit, the edit moves the focus, and moving the focus sends
- * the view another such event: the program runs out of stack.
- */
-class Table : public QTableWidget
+/** A table of rows to read, or to edit in place (`editable`): an ItemViews::Table either way, so no input method reaches the view itself. */
+QTableWidget* SimpleTable(const QStringList& headers, QWidget* parent, bool editable = false)
 {
-public:
-    using QTableWidget::QTableWidget;
-
-protected:
-    void inputMethodEvent(QInputMethodEvent* event) override { event->ignore(); }
-};
-
-class List : public QListWidget
-{
-public:
-    using QListWidget::QListWidget;
-
-protected:
-    void inputMethodEvent(QInputMethodEvent* event) override { event->ignore(); }
-};
-
-QTableWidget* SimpleTable(const QStringList& headers, QWidget* parent)
-{
-    auto* table{new Table(0, headers.size(), parent)};
+    auto* table{new ItemViews::Table(0, headers.size(), parent)};
     table->setHorizontalHeaderLabels(headers);
     table->verticalHeader()->hide();
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
     table->setAlternatingRowColors(true);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     table->horizontalHeader()->setStretchLastSection(true);
-    // Under Wayland (WSL), an input method event that reaches the view starts an edit, which moves the
-    // focus, which sends another: the program runs out of stack. The editors keep their input methods.
-    table->setAttribute(Qt::WA_InputMethodEnabled, false);
-    table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked | QAbstractItemView::EditKeyPressed);
+    // The editors keep their input methods (ItemViews: the view leaves those events to them).
+    if (editable) table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked | QAbstractItemView::EditKeyPressed);
     return table;
 }
 
 /** A list to pick from: nothing in it is edited. */
 QListWidget* PickList(QWidget* parent)
 {
-    auto* list{new List(parent)};
+    auto* list{new ItemViews::List(parent)};
     list->setObjectName("nameList");
     list->setMinimumWidth(220);
-    list->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    list->setAttribute(Qt::WA_InputMethodEnabled, false);
     return list;
 }
 
@@ -355,7 +329,6 @@ QWidget* BitNamesPage::createMessagesTab()
     layout->addWidget(send, 0, Qt::AlignRight);
     layout->addWidget(Heading(tr("Received"), tab));
     m_inbox = SimpleTable({tr("Message"), tr("Paid"), tr("Confirmations")}, tab);
-    m_inbox->setEditTriggers(QAbstractItemView::NoEditTriggers);
     layout->addWidget(m_inbox, 1);
 
     // Encrypting and signing by hand, folded away.
@@ -719,14 +692,13 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
     layout->addWidget(Heading(tr("Where it points"), panel));
     layout->addWidget(Dim(editable ? tr("Host @ is %1.x itself; www is www.%1.x; * is anything under it. A value without a final dot is under %1.x.").arg(shown)
                                    : tr("What %1.x and the hosts under it answer.").arg(shown), panel));
-    auto* records{SimpleTable({tr("Host"), tr("Type"), tr("Value"), tr("Priority")}, panel)};
+    auto* records{SimpleTable({tr("Host"), tr("Type"), tr("Value"), tr("Priority")}, panel, editable)};
     records->setMinimumHeight(160);
     records->horizontalHeader()->setStretchLastSection(false);
     records->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     records->setColumnWidth(0, 110);
     records->setColumnWidth(1, 110);
     records->setColumnWidth(3, 70);
-    if (!editable) records->setEditTriggers(QAbstractItemView::NoEditTriggers);
     if (const auto rows{call("getnamerecords", Args({handle.toStdString()}), false, true)}) {
         for (const UniValue& r : rows->getValues()) {
             AddRecordRow(records, Text(r["host"]), Text(r["type"]), Text(r["value"]), r.exists("priority") ? Text(r["priority"]) : QString{}, editable);
@@ -889,7 +861,6 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
     } else {
         // History, for names looked at.
         auto* history{SimpleTable({tr("Field"), tr("Value"), tr("Height")}, nullptr)};
-        history->setEditTriggers(QAbstractItemView::NoEditTriggers);
         history->setMinimumHeight(140);
         if (const auto h{call("getnamehistory", Args({handle.toStdString()}), false, true)}) {
             for (const std::string& field : h->getKeys()) {
