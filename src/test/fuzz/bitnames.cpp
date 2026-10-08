@@ -2,8 +2,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-// The names under fuzzing, on the store of the sidechain state: blocks of fuzzed reservations,
-// registrations, subnames, updates, releases and transfers. After every block: undone, the store is
+// The names under fuzzing, on the store of the sidechain state: blocks of fuzzed reservations (bound
+// to the script of their output, copied, or to the name alone), registrations, subnames, updates,
+// releases and transfers, by two owners. After every block: undone, the store is
 // exactly what it was (through serialization of the undo data too); a transaction that breaks a rule
 // changes nothing; and every index is exactly what the tables imply.
 
@@ -33,9 +34,10 @@ void initialize_bitnames()
     static const auto testing_setup{MakeNoLogFileContext<>()};
 }
 
-const CScript PAYEE{CScript() << OP_TRUE};
+/** Two owners: names and reservations are carried by outputs someone can spend (a script of a standard type). */
+const CScript PAYEES[2]{CScript() << OP_0 << std::vector<unsigned char>(20, 1), CScript() << OP_0 << std::vector<unsigned char>(20, 2)};
 
-CMutableTransaction Tx(const std::vector<COutPoint>& inputs, size_t names, size_t reservations, std::optional<Operation> op, uint32_t salt)
+CMutableTransaction Tx(const std::vector<COutPoint>& inputs, size_t names, size_t reservations, std::optional<Operation> op, uint32_t salt, const CScript& payee)
 {
     CMutableTransaction tx;
     for (const COutPoint& in : inputs) tx.vin.emplace_back(in);
@@ -44,11 +46,11 @@ CMutableTransaction Tx(const std::vector<COutPoint>& inputs, size_t names, size_
     marker.operation = std::move(op);
     for (size_t i{0}; i < names; ++i) {
         marker.name_outputs.push_back(tx.vout.size());
-        tx.vout.emplace_back(0, PAYEE);
+        tx.vout.emplace_back(0, payee);
     }
     for (size_t i{0}; i < reservations; ++i) {
         marker.reservation_outputs.push_back(tx.vout.size());
-        tx.vout.emplace_back(0, PAYEE);
+        tx.vout.emplace_back(0, payee);
     }
     tx.vout.emplace_back(0, MarkerScript(marker));
     return tx;
@@ -66,9 +68,10 @@ std::set<sidechain::StoreBytes> KeysUnder(const sidechain::StoreView& view, uint
 }
 
 /** Every index, rebuilt from the tables, is the one in the store; the counts are the tables' sizes. */
-void CheckIndexes(const sidechain::StoreView& view, bool counted)
+void CheckIndexes(const sidechain::StoreView& view, bool counted, int audit2_height)
 {
     std::set<sidechain::StoreBytes> children, name_tokens, by_commitment;
+    std::set<uint256> bound;
     uint64_t names{0}, reservations{0};
     sidechain::Table<uint256, NameRecord>{0x21}.ForEach(view, [&](const uint256& hash, const NameRecord& record) {
         ++names;
@@ -98,11 +101,19 @@ void CheckIndexes(const sidechain::StoreView& view, bool counted)
         sidechain::KeyCodec<uint64_t>::Encode(key, order.Get(view, id).value_or(0));
         sidechain::KeyCodec<uint256>::Encode(key, id);
         by_commitment.insert(key);
+        // The script a reservation is bound to is kept for each one made from audit2_height, and no other.
+        if (reservation.height >= audit2_height) bound.insert(id);
         return true;
     });
     assert(KeysUnder(view, 0x27) == children);
     assert(KeysUnder(view, 0x28) == name_tokens);
     assert(KeysUnder(view, 0x29) == by_commitment);
+    std::set<uint256> origins;
+    sidechain::Table<uint256, CScript>{0x2d}.ForEach(view, [&](const uint256& id, const CScript&) {
+        origins.insert(id);
+        return true;
+    });
+    assert(origins == bound);
     const State state{view};
     assert(state.NameCount() == names);
     assert(state.ReservationCount() == reservations);
@@ -185,9 +196,17 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
             for (int i{0}; i < n_in; ++i) inputs.push_back(carried[fdp.ConsumeIntegralInRange<size_t>(0, carried.size() - 1)].first);
             const std::string text{texts[fdp.ConsumeIntegralInRange<size_t>(0, texts.size() - 1)]};
             const uint256 nonce{static_cast<uint8_t>(fdp.ConsumeIntegralInRange<int>(1, 3))};
+            const CScript& payee{PAYEES[fdp.ConsumeIntegralInRange<int>(0, 1)]};
             std::optional<Operation> op;
             switch (fdp.ConsumeIntegralInRange<int>(0, 6)) {
-            case 0: op = Reserve{ReservationCommitment(HashName(text), nonce)}; break;
+            case 0:
+                // Bound to the script of its output, to another one (a copy of someone else's), or to the name alone.
+                switch (fdp.ConsumeIntegralInRange<int>(0, 2)) {
+                case 0: op = Reserve{ReservationCommitment(HashName(text), nonce, payee)}; break;
+                case 1: op = Reserve{ReservationCommitment(HashName(text), nonce, PAYEES[fdp.ConsumeIntegralInRange<int>(0, 1)])}; break;
+                default: op = Reserve{ReservationCommitment(HashName(text), nonce)}; break;
+                }
+                break;
             case 1: op = Register{HashName(text), nonce, {}, fdp.ConsumeBool() ? std::optional{text} : std::nullopt}; break;
             case 2: op = RegisterSubname{labels[fdp.ConsumeIntegralInRange<size_t>(0, labels.size() - 1)], {}}; break;
             case 3: {
@@ -199,7 +218,7 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
             case 4: op = Release{}; break;
             default: break; // a transfer: no operation
             }
-            const CMutableTransaction tx{Tx(inputs, fdp.ConsumeIntegralInRange<size_t>(0, 3), fdp.ConsumeIntegralInRange<size_t>(0, 2), op, ++salt)};
+            const CMutableTransaction tx{Tx(inputs, fdp.ConsumeIntegralInRange<size_t>(0, 3), fdp.ConsumeIntegralInRange<size_t>(0, 2), op, ++salt, payee)};
             const uint256 before_tx{sidechain::StoreHash(block)};
             std::string reason;
             if (!state.ApplyTx(CTransaction{tx}, height, params, reason)) {
@@ -209,7 +228,7 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
         }
         const sidechain::StoreUndo undo{block.TakeUndo()};
         block.MergeInto(cache);
-        CheckIndexes(cache, params.audit_rules_height == 0);
+        CheckIndexes(cache, params.audit_rules_height == 0, params.audit2_height);
         // Undone, through serialization: exactly what was before the block.
         DataStream stream{};
         stream << undo;
@@ -218,6 +237,6 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
         sidechain::StoreOverlay reverted{cache, /*journal=*/false};
         reverted.Revert(read);
         assert(sidechain::StoreHash(reverted) == before);
-        CheckIndexes(reverted, params.audit_rules_height == 0);
+        CheckIndexes(reverted, params.audit_rules_height == 0, params.audit2_height);
     }
 }

@@ -107,9 +107,14 @@ struct BitNamesParams {
      * - a reservation is revealed only once it is reveal_depth blocks deep: whoever makes a block
      *   sees every registration waiting for it, and could otherwise reserve the same name under a
      *   nonce of its own and register it in its own block, ahead of the one it saw;
-     * - of the reservations of one commitment, one made in an earlier block than the one revealed
-     *   stops it, one made in the same block does not (it stopped it when it came first in the
-     *   chain's order: whoever made the block could put a copy ahead of any reservation it saw);
+     * - a reservation commits to the name and to the script of the output that carries it
+     *   (bitnames::ReservationCommitment), and a registration opens it with that script: a copy of
+     *   it to anyone else's script, in the same block even, opens nothing, and neither stops nor
+     *   takes the registration. A reservation made before, committing to the name alone, is stopped
+     *   by another of its commitment from the same block or an earlier one; one made after opens
+     *   nothing;
+     * - a subname made again starts with no subnames: those left under it by a release before
+     *   audit_rules_height are released (as a top-level name registered again does);
      * - a subname is at most bitnames::MAX_SUBNAME_DEPTH levels under its top-level name, and a
      *   name has at most bitnames::MAX_SUBNAMES names under it, so that releasing a name (which
      *   releases them all) is bounded work.

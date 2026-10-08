@@ -255,6 +255,13 @@ uint256 ReservationCommitment(const NameHash& name, const uint256& nonce)
     return commitment;
 }
 
+uint256 ReservationCommitment(const NameHash& name, const uint256& nonce, const CScript& script)
+{
+    uint256 commitment;
+    CHMAC_SHA256(nonce.data(), nonce.size()).Write(name.data(), name.size()).Write(script.data(), script.size()).Finalize(commitment.data());
+    return commitment;
+}
+
 uint256 IcannMessage(const std::vector<std::string>& names, const COutPoint& first_input)
 {
     HashWriter writer{};
@@ -415,6 +422,8 @@ struct State::Plan {
     std::vector<std::pair<NameHash, NameRecord>> names;
     std::optional<Txid> reservation_made;
     uint256 reservation_commitment;
+    //! From audit2_height: the script of the output of the reservation made, which its commitment binds.
+    std::optional<CScript> reservation_origin;
     std::optional<Txid> reservation_revealed;
     std::optional<std::pair<uint32_t, NameHash>> seq;
     //! Names and reservations released.
@@ -440,6 +449,7 @@ const sidechain::TableId BY_COMMITMENT{0x29};
 const sidechain::Cell<uint64_t> NAME_COUNT{0x2a, 0};
 const sidechain::Cell<uint64_t> RESERVATION_COUNT{0x2b, 0};
 const sidechain::TableId HISTORY{0x2c};
+const sidechain::Table<uint256, CScript> ORIGINS{0x2d};
 
 sidechain::StoreBytes ChildKey(const uint256& parent, const uint256& child)
 {
@@ -505,6 +515,8 @@ std::optional<int> State::ReservationHeight(const Txid& id) const
     if (const auto record{GetReservationRecord(id)}) return record->height;
     return std::nullopt;
 }
+
+std::optional<CScript> State::GetReservationOrigin(const Txid& id) const { return ORIGINS.Get(*m_view, id.ToUint256()); }
 
 std::optional<NameData> State::DataAtHeight(const NameRecord& record, int at) const
 {
@@ -753,41 +765,75 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         reservations_out.push_back(made);
         plan.reservation_made = txid;
         plan.reservation_commitment = reserve->commitment;
+        // What its commitment binds: the script of its output (the last reservation output).
+        if (height >= params.audit2_height) plan.reservation_origin = tx.vout[marker->reservation_outputs.back()].scriptPubKey;
     } else if (const auto* reg{op ? std::get_if<Register>(op) : nullptr}) {
         // Names registered before, in this block included, are taken.
         if (HasName(reg->name)) return invalid("bad-bn-name-taken");
+        const bool audit2{height >= params.audit2_height};
         const uint256 implied{ReservationCommitment(reg->name, reg->nonce)};
-        const auto burned{std::find_if(reservations_out.begin(), reservations_out.end(), [&](const Token& t) { return t.commitment == implied; })};
+        // From audit2_height, a reservation bound to the script of its output: nobody but its maker can
+        // have made it (a copy to another script commits to nothing anyone can open, one to the maker's
+        // script is the maker's), so it reveals the name whatever other reservations there are.
+        auto burned{reservations_out.end()};
+        bool bound{false};
+        for (auto it{reservations_out.begin()}; it != reservations_out.end(); ++it) {
+            const Txid id{Txid::FromUint256(it->id)};
+            if (audit2) {
+                if (const auto script{GetReservationOrigin(id)}; script && it->commitment == ReservationCommitment(reg->name, reg->nonce, *script)) {
+                    burned = it;
+                    bound = true;
+                    break;
+                }
+                // A commitment to the name alone: only from a reservation made before these rules.
+                if (ReservationHeight(id).value_or(0) >= params.audit2_height) continue;
+            }
+            if (burned == reservations_out.end() && it->commitment == implied) burned = it;
+        }
         if (burned == reservations_out.end()) return invalid("bad-bn-no-reservation");
         if (ri != ro + 1 || bo != bi + 1) return invalid("bad-bn-unbalanced");
         const Txid mine{Txid::FromUint256(burned->id)};
         const int reserved_at{ReservationHeight(mine).value_or(0)};
-        const bool audit2{height >= params.audit2_height};
         // Only once the reservation is deep enough: whoever makes this block saw the name and the
         // nonce of every registration waiting for it, and could have reserved the name under a
         // nonce of its own, in this very block, to register it first.
         if (audit2 && height - reserved_at < params.reveal_depth) return invalid("bad-bn-reservation-too-young");
-        if (audit2 || height >= params.audit_rules_height) {
+        if (!bound && (audit2 || height >= params.audit_rules_height)) {
             // A copy of someone else's reservation, made to register the name first once they
             // reveal it, cannot reveal it. The index of reservations by commitment has them oldest
             // first (by height, then order: orders grow with height, and reservations without one
-            // are older than any with one): the first one says.
+            // are older than any with one).
             sidechain::StoreBytes prefix{BY_COMMITMENT};
             sidechain::KeyCodec<uint256>::Encode(prefix, implied);
-            if (const auto first{m_view->Next(prefix, prefix)}) {
+            if (audit2) {
+                // A reservation made before these rules, revealed after them: another of the same
+                // commitment from the same block or an earlier one stops it. One from an earlier block
+                // is older than any copy made after seeing this one in the mempool; one from the same
+                // block may be a copy whoever made the block put there, and could reveal the name as
+                // well as this one: neither does, rather than the copier.
+                bool other_first{false};
+                m_view->ForEach(prefix, [&](const sidechain::StoreBytes& key, const sidechain::StoreBytes&) {
+                    std::span<const unsigned char> in{key};
+                    in = in.subspan(prefix.size());
+                    const int other_height{static_cast<int>(sidechain::KeyCodec<uint32_t>::Decode(in))};
+                    if (other_height > reserved_at) return false;
+                    sidechain::KeyCodec<uint64_t>::Decode(in);
+                    const Txid other{Txid::FromUint256(sidechain::KeyCodec<uint256>::Decode(in))};
+                    if (other != mine) {
+                        other_first = true;
+                        return false;
+                    }
+                    return true;
+                });
+                if (other_first) return invalid("bad-bn-reservation-not-first");
+            } else if (const auto first{m_view->Next(prefix, prefix)}) {
+                // The first one says.
                 std::span<const unsigned char> in{first->first};
                 in = in.subspan(prefix.size());
-                const int first_height{static_cast<int>(sidechain::KeyCodec<uint32_t>::Decode(in))};
+                sidechain::KeyCodec<uint32_t>::Decode(in);
                 const uint64_t order{sidechain::KeyCodec<uint64_t>::Decode(in)};
                 const Txid other{Txid::FromUint256(sidechain::KeyCodec<uint256>::Decode(in))};
-                if (audit2) {
-                    // One from an earlier block: older than any copy made after seeing this
-                    // reservation in the mempool. One from the same block does not count: it came
-                    // first only because whoever made the block put it there.
-                    if (other != mine && first_height < reserved_at) return invalid("bad-bn-reservation-not-first");
-                } else if (other != mine && order < OrderOf(mine).value_or(0)) {
-                    return invalid("bad-bn-reservation-not-first");
-                }
+                if (other != mine && order < OrderOf(mine).value_or(0)) return invalid("bad-bn-reservation-not-first");
             }
         }
         plan.reservation_revealed = Txid::FromUint256(burned->id);
@@ -895,6 +941,18 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             for (const NameHash& name : names_in) {
                 if (gone.contains(name)) return invalid("bad-bn-released-name-kept");
             }
+        } else if (height >= params.audit2_height) {
+            // Subnames left under it by an earlier holder, released before releasing took them along
+            // (it was made, released, and is made again), go now, as they do when a top-level name is
+            // registered again: the new holder starts with an empty namespace.
+            const std::vector<NameHash> orphans{ChildrenOf(child)};
+            if (!orphans.empty()) {
+                plan.names_released.insert(plan.names_released.end(), orphans.begin(), orphans.end());
+                const std::set<NameHash> gone{ReleaseDescendants(plan, orphans)};
+                for (const NameHash& name : names_in) {
+                    if (gone.contains(name)) return invalid("bad-bn-released-name-kept");
+                }
+            }
         }
         // Each name above it counts it; the one at the top counts every name in its tree.
         std::vector<std::pair<NameHash, NameRecord>> above;
@@ -951,6 +1009,7 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::BitName
     for (const COutPoint& outpoint : plan->spent) SetToken(outpoint, std::nullopt);
     for (const auto& [outpoint, token] : plan->created) SetToken(outpoint, token);
     if (plan->reservation_made) SetReservation(*plan->reservation_made, ReservationRecord{plan->reservation_commitment, height});
+    if (plan->reservation_made && plan->reservation_origin) ORIGINS.Put(out, plan->reservation_made->ToUint256(), *plan->reservation_origin);
     // The order of reservations, for the rule that the oldest of a commitment reveals it.
     if (plan->reservation_made && height >= params.audit_rules_height) {
         const uint64_t next{NEXT_ORDER.Get(*m_view)};
@@ -962,6 +1021,10 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::BitName
         if (OrderOf(id)) SetOrder(id, std::nullopt);
     }
     if (plan->reservation_revealed) SetReservation(*plan->reservation_revealed, std::nullopt);
+    const auto forget_origin{[&](const Txid& id) {
+        if (ORIGINS.Contains(*m_view, id.ToUint256())) ORIGINS.Erase(out, id.ToUint256());
+    }};
+    if (plan->reservation_revealed) forget_origin(*plan->reservation_revealed);
     for (const NameHash& name : plan->names_replaced) {
         if (const auto record{GetName(name)}) {
             SEQ.Erase(out, record->seq);
@@ -983,7 +1046,10 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::BitName
         EraseHistory(record->seq);
         SetName(name, std::nullopt);
     }
-    for (const Txid& id : plan->reservations_released) SetReservation(id, std::nullopt);
+    for (const Txid& id : plan->reservations_released) {
+        SetReservation(id, std::nullopt);
+        forget_origin(id);
+    }
     return true;
 }
 

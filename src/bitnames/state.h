@@ -32,7 +32,8 @@
  *    holds the output that carries it owns it, and moves it as coins are moved.
  *  - It is taken in two steps, so that nobody can see a name coming and take it
  *    first: a **reservation** commits to the name under a secret nonce
- *    (HMAC-SHA256 with the nonce as key, of the name hash), and a later
+ *    (HMAC-SHA256 with the nonce as key, of the name hash and, from
+ *    audit2_height, of the script of the reservation's output), and a later
  *    **registration** reveals the nonce, spends the reservation and creates the
  *    name.
  *  - A name holds **data**, every field optional: a commitment to data kept
@@ -188,7 +189,8 @@ struct NameUpdates {
 
 struct Reserve {
     static constexpr uint8_t KIND{1};
-    //! ReservationCommitment(name, nonce).
+    //! ReservationCommitment(name, nonce, script of the output that carries it); before
+    //! audit2_height, ReservationCommitment(name, nonce).
     uint256 commitment;
     SERIALIZE_METHODS(Reserve, obj) { READWRITE(obj.commitment); }
     friend bool operator==(const Reserve&, const Reserve&) = default;
@@ -274,8 +276,15 @@ std::optional<Marker> GetMarker(const CTransaction& tx, std::string* error = nul
 
 /** The hash of the text of a name. */
 NameHash HashName(const std::string& name);
-/** What a reservation commits to: HMAC-SHA256 with the nonce as key, of the name hash. */
+/** What a reservation committed to before audit2_height: HMAC-SHA256 with the nonce as key, of the name hash. */
 uint256 ReservationCommitment(const NameHash& name, const uint256& nonce);
+/**
+ * What a reservation commits to from audit2_height: HMAC-SHA256 with the nonce as key, of the name
+ * hash then the script of the output that carries the reservation when it is made. Bound to that
+ * script, a copy of it made by anyone else, with an output of their own, commits to nothing they can
+ * reveal; one with an output of the maker's script is the maker's to spend.
+ */
+uint256 ReservationCommitment(const NameHash& name, const uint256& nonce, const CScript& script);
 /** What the ICANN authority signs: the names, and the first input of the transaction, so that it cannot be replayed. */
 uint256 IcannMessage(const std::vector<std::string>& names, const COutPoint& first_input);
 /** Whether a name can be marked as an ICANN domain name: lower-case letters, digits and hyphens, in at most two labels. */
@@ -406,7 +415,8 @@ struct ReservationRecord {
  * nothing the size of the registry, or of the history of a name, is ever read, copied or written
  * whole. Tables (the first byte of the keys): 0x20 what outputs carry, 0x21 names as they are now,
  * 0x22 reservations not revealed yet, 0x23 names by number, 0x24 the order of reservations, 0x2c the
- * history of names (by number, field, height and place in the block, latest first); single values
+ * history of names (by number, field, height and place in the block, latest first), 0x2d the script
+ * a reservation made from audit2_height was made with (what its commitment binds); single values
  * 0x25 the next number, 0x26 the next order, 0x2a and 0x2b how many names and reservations there
  * are. Indexes, so that no rule reads a table whole: 0x27 names by parent, 0x28 outputs by the name
  * they carry, 0x29 reservations by commitment, then height and order.
@@ -439,6 +449,8 @@ public:
     std::optional<uint256> GetReservation(const Txid& id) const;
     /** The height of the block that made a reservation not revealed yet. */
     std::optional<int> ReservationHeight(const Txid& id) const;
+    /** The script of the output that carried a reservation when it was made, for one made from audit2_height. */
+    std::optional<CScript> GetReservationOrigin(const Txid& id) const;
     /** The data of a name as it was at the end of the block at `height`; nullopt before its registration. */
     std::optional<NameData> DataAtHeight(const NameRecord& record, int height) const;
     /** Every value each field of a name has had. */

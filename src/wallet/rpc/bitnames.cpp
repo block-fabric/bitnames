@@ -191,13 +191,19 @@ CPubKey NewKey(CWallet& wallet, const std::string& label)
     return pubkey;
 }
 
-/** The reservation of this wallet for a name: the one whose commitment the nonce of its key opens. */
+/**
+ * The reservation of this wallet for a name: the one whose commitment the nonce of its key opens, bound
+ * to the script of its output (from audit2_height) or, made before, to the name alone.
+ */
 std::optional<std::pair<COutPoint, uint256>> FindReservation(CWallet& wallet, const NameHash& hash)
 {
     for (const auto& owned : OwnedTokens(wallet)) {
         if (owned.token.kind != Token::Kind::RESERVATION || !std::holds_alternative<WitnessV0KeyHash>(owned.dest)) continue;
         const uint256 nonce{ReservationNonce(wallet, owned.dest, hash)};
-        if (bitnames::ReservationCommitment(hash, nonce) == owned.token.commitment) return std::make_pair(owned.outpoint, nonce);
+        if (bitnames::ReservationCommitment(hash, nonce, GetScriptForDestination(owned.dest)) == owned.token.commitment ||
+            bitnames::ReservationCommitment(hash, nonce) == owned.token.commitment) {
+            return std::make_pair(owned.outpoint, nonce);
+        }
     }
     return std::nullopt;
 }
@@ -257,8 +263,13 @@ RPCMethod reservename()
     const NameHash hash{bitnames::HashName(name)};
     if (pwallet->chain().getBitName(hash)) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is taken");
     const CTxDestination dest{NewDestination(*pwallet, NameLabel(name))};
+    const uint256 nonce{ReservationNonce(*pwallet, dest, hash)};
+    // From audit2_height, the commitment binds the reservation to the script of its output: a copy of
+    // it, made by someone who saw it, can never reveal the name.
+    const auto [params, next_height]{pwallet->chain().getBitNamesParams()};
     Marker marker;
-    marker.operation = bitnames::Reserve{bitnames::ReservationCommitment(hash, ReservationNonce(*pwallet, dest, hash))};
+    marker.operation = bitnames::Reserve{next_height >= params.audit2_height ? bitnames::ReservationCommitment(hash, nonce, GetScriptForDestination(dest))
+                                                                             : bitnames::ReservationCommitment(hash, nonce)};
     const CTransactionRef tx{SendBitNames(*pwallet, marker, {}, std::vector<CTxDestination>{dest}, {})};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
