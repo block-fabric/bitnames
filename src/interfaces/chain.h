@@ -199,6 +199,10 @@ public:
     virtual std::optional<std::pair<COutPoint, CScript>> getBitNameOwner(const bitnames::NameHash& name) = 0;
     //! BitNames: the labels of the subnames of a name.
     virtual std::vector<std::string> getBitNameSubnames(const bitnames::NameHash& parent) = 0;
+    //! BitNames: the height of the block that made a reservation not revealed yet (by the transaction that made it).
+    virtual std::optional<int> getBitNamesReservationHeight(const Txid& id) = 0;
+    //! BitNames: the data of a name as it was at the end of the block at a height.
+    virtual std::optional<bitnames::NameData> getBitNameDataAtHeight(const bitnames::NameHash& name, int height) = 0;
     //! BitNames: the parameters of the names, and the height of the next block.
     virtual std::pair<Consensus::BitNamesParams, int> getBitNamesParams() = 0;
     //! The merged-mining request (BIP301 M8) in the mempool for a sidechain slot, if any: the sidechain

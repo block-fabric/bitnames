@@ -11,10 +11,32 @@ server for the `.x` domain.
 
 - **Taking a name** takes two steps, so that nobody can see it coming and take it first. A
   *reservation* commits to the name without showing it (HMAC-SHA256 of the name's hash, under a
-  nonce only the wallet can make); once it is in a block, the *registration* reveals the nonce and
-  creates the name. The window ("Names", in the sidebar) does both steps.
+  nonce only the wallet can make); once it is deep enough in the chain, the *registration* reveals
+  the nonce and creates the name. The window ("Names", in the sidebar) does both steps.
+- **A reservation is revealed only once it is deep enough** (`reveal_depth` blocks: 6 on the main
+  network, 3 on the test network and signet, 2 on regtest; `getbitnamesinfo` shows it): a
+  registration in block *h* of a reservation made in block *r* needs *h - r* ≥ `reveal_depth`.
+  Whoever makes a block sees every registration waiting for it, name and nonce; without this rule
+  they could reserve the same name under a nonce of their own and register it in their own block,
+  ahead of the one they saw. A reservation made after seeing a name revealed is never deep enough
+  before that registration is in a block, unless whoever makes the blocks keeps it out of
+  `reveal_depth` blocks in a row.
+- **Copies of a reservation.** A reservation's commitment is public once it is in the mempool, so
+  anyone can make another with the same commitment. Only a copy from an *earlier* block than the
+  reservation revealed stops it; a copy in the same block (put ahead of it by whoever made the
+  block) does not. Before the rules of the second audit, the older of the two in the order of the
+  chain stopped the other, which let whoever made a block stop any registration of a commitment it
+  saw in the mempool.
 - **A name is known on the chain by the SHA-256 hash of its text.** A registration may also make
   the text *public*, so that the name can be listed and searched for, as Namecoin names are.
+- **The text of a name.** The wallet takes names of lower-case letters, digits, `-` and `_`, as DNS
+  looks names up in lower case (`Core.x` is `core.x`). The chain knows hashes only, so a name of
+  any other text can be registered by its hash; the commands then refer to it by its hash
+  (`0x...`) or number, never by text, and its text, even if published, is not shown. Commands
+  that take a name refuse text with upper-case letters rather than look up another name.
+- **Dotted names are subnames, never hashes.** `pay.shop` in a command is the subname `pay` of
+  `shop`, if there is one, and an error if not. The name whose hash is SHA-256 of `pay.shop` (which
+  anyone can register by its hash) is reachable only as `0x` and its hash.
 - **Names are permanent.** They do not expire. Their owner can give them away
   (`transfername`) or release them (`releasename`): a released name leaves the registry with its
   data, and anyone can register it again. A reservation that is not needed can be released too
@@ -28,10 +50,27 @@ server for the `.x` domain.
   its values.
 - **Subnames.** The owner of `core` can make `blog.core` and give it to any address
   (`createsubname core blog <address>`). A subname is a name of its own: its holder sets its data
-  and records, gives it on, and makes subnames of it. The owner of the parent cannot take it back.
-  On the chain a subname is known by SHA-256 of its parent's hash and its label.
+  and records, gives it on, and makes subnames of it. On the chain a subname is known by SHA-256 of
+  its parent's hash and its label.
+- **A subname depends on its parent, as a DNS subdomain depends on its domain.** What its holder
+  can rely on: nobody else can update it, move it, release it alone or make subnames of it, and
+  the holder of the parent cannot make another subname of the same label while it exists. What
+  its holder cannot rely on: **when the parent is released, its subnames are released with it**,
+  at any depth, whoever holds them; whoever registers the parent next starts with an empty
+  namespace and can make the same labels again, for anyone. And the parent's holder can, at any
+  time, make the subname's domain answer elsewhere: DNS resolves down from the top-level name, so
+  a `delegate` in the records of the parent (or of a level above it) is followed before the
+  subname is reached, and `blog.core.x` then resolves under the name delegated to. A subname is as lasting as the holder of its parent wants it to be: hold one of a
+  name whose holder you trust, or take a top-level name.
+- **Bounds.** A subname is at most 8 levels under its top-level name, and a name has at most 1000
+  names under it, at any depth (from the rules of the second audit). Releasing a name releases
+  them all in one transaction: the bound keeps the work of checking it (in the mempool, for each
+  replacement, after every block, and in the block) small, and a tree of that size costs whoever
+  builds it 1000 transactions.
 - **ICANN names.** An authority set per network can mark names as ICANN domain names. None is set
-  on the test network.
+  on the test network. The authority marks a *hash*: whoever registered `example.com` first, by
+  text or by its hash, holds the name it marks. The authority has to check who holds a name before
+  marking it; the mark does not move the name to the domain's owner.
 
 ## How it is carried
 
@@ -51,7 +90,10 @@ accident: a transaction that spends a name without carrying it on is invalid.
   ChaCha20-Poly1305. `decryptnamemessage` opens a message to a key of the wallet.
 - `signasname` and `verifynamesignature` sign and check messages with the signing key of a name.
 - **Paymail.** `sendpaymail <name> <amount> <message>` pays the owner of a name, at least the
-  name's paymail fee, with a message encrypted to it; `listpaymail` lists what the wallet received.
+  name's paymail fee, with a message encrypted to it; `listpaymail` lists what the wallet received
+  that paid at least the paymail fee of the wallet's name with the key the message is encrypted
+  to, as the fee was in the block of the payment (anyone can send a message with any amount; one
+  that paid less is left out).
 
 ## DNS records
 
@@ -82,7 +124,11 @@ answers.
 ## The DNS server
 
 Start the node with `-dnsbind=127.0.0.1:5335` (or `dnsbind=127.0.0.1:5335` in `bitnames.conf`);
-it answers DNS questions for `.x` over UDP (TTL 60 seconds), and refuses the others. Then send the
+it answers DNS questions for `.x` over UDP (TTL 60 seconds), and refuses the others. Answers too
+large for a UDP datagram of 512 bytes are sent empty with the TC bit set. Each source address gets
+at most 20 answers a second (with bursts of 40), and the server at most 1000 a second in all;
+questions beyond that get no answer, so that the server cannot be used to flood a forged source
+address. Bind it to a local address unless it is meant to serve others. Then send the
 `.x` questions of the computer to it:
 
 - **Linux, systemd-resolved:** `resolvectl dns lo 127.0.0.1:5335` and `resolvectl domain lo ~x`

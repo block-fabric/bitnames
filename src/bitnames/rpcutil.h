@@ -27,14 +27,25 @@ NameData ParseData(const UniValue& value);
 NameUpdates ParseUpdates(const UniValue& value);
 UniValue DataToJSON(const NameData& data);
 
+/** How a name is looked up by its hash. */
+using NameLookup = std::function<std::optional<NameRecord>(const NameHash&)>;
+
 /**
- * A name given by its text, the hex of its hash ("0x" + 64 digits), or its number ("1739-0029").
- * Text with dots is a subname ("blog.core") if `exists` finds one along that path, else a name of
- * that text.
+ * A name given by its text, the hex of its hash ("0x" + 64 digits), or its number ("1739-0029",
+ * where `by_seq` is given). Text with dots is a subname ("blog.core"), found from its last label
+ * down, each step a subname of the one above, or an ICANN name of that text; anything else with
+ * dots is an error, never the name of the hash of that text (anyone can register one). Text with
+ * upper-case letters is an error: DNS looks names up in lower case.
  */
-NameHash ParseNameArg(const UniValue& value, const State* state = nullptr, const std::function<bool(const NameHash&)>& exists = {});
-/** The full text of a name, "blog.core" for a subname, if it and its parents are public; else empty. */
+NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const std::function<std::optional<NameHash>(uint32_t)>& by_seq = {});
+NameHash ParseNameArg(const UniValue& value, const State& state);
+/**
+ * The full text of a name, "blog.core" for a subname, if it and its parents are public and their
+ * text is of the characters names are made of (IsGoodNameText); else empty, never a part of it.
+ */
 std::string FullText(const State& state, const NameRecord& record);
+/** Whether text is what the wallet makes names of, and shows: 1 to 255 lower-case letters, digits, '-' and '_'. */
+bool IsGoodNameText(const std::string& text);
 
 /**
  * DNS records as rows: {"host": "@" or a label under the name ("www", "a.b"), "type": "A", "value": ...,

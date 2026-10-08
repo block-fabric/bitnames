@@ -888,4 +888,85 @@ BOOST_AUTO_TEST_CASE(subname_bounds)
     BOOST_CHECK(state.Names().at(core) == before_release);
 }
 
+BOOST_AUTO_TEST_CASE(names_given_to_commands)
+{
+    // A dotted text is a subname or an error: never the name of the hash of that text, which anyone
+    // can register (a squat of a look-alike of pay.shop). Names are lower case.
+    Consensus::BitNamesParams params;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    const COutPoint shop{Registered(state, "shop", {}, 10, params)};
+    const NameHash look_alike{HashName("pay.shop")};
+    const CMutableTransaction reserve{Tx({}, 0, 1, Reserve{ReservationCommitment(look_alike, uint256{3})}, 30)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 3, params, undo, reason));
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{Tx({COutPoint{reserve.GetHash(), 0}}, 1, 0, Register{look_alike, uint256{3}, {}}, 31)}, 4, params, undo, reason));
+    const State view{state.View()};
+    try {
+        ParseNameArg(UniValue{"pay.shop"}, view);
+        BOOST_ERROR("pay.shop is no subname yet");
+    } catch (const UniValue& error) {
+        BOOST_CHECK(error.find_value("message").get_str().starts_with("No such subname: pay.shop"));
+    }
+    // By its hash, it is the look-alike.
+    BOOST_CHECK(ParseNameArg(UniValue{"0x" + look_alike.GetHex()}, view) == look_alike);
+    // Once the subname is made, the text is it.
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({shop}, 2, 0, RegisterSubname{"pay", {}}, 32)}, 5, params, undo, reason), reason);
+    BOOST_CHECK(ParseNameArg(UniValue{"pay.shop"}, state.View()) == SubnameHash(HashName("shop"), "pay"));
+    // Through a lookup only (as the wallet has it), the same.
+    const auto lookup{[&](const NameHash& h) { return state.View().GetName(h); }};
+    BOOST_CHECK(ParseNameArg(UniValue{"pay.shop"}, lookup) == SubnameHash(HashName("shop"), "pay"));
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"nope.shop"}, lookup), UniValue);
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"Shop"}, lookup), UniValue);
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"pay.Shop"}, lookup), UniValue);
+    BOOST_CHECK(ParseNameArg(UniValue{"shop"}, lookup) == HashName("shop"));
+    BOOST_CHECK(ParseNameArg(UniValue{"unregistered"}, lookup) == HashName("unregistered"));
+
+    // What is shown of a name: its text if of the characters names are made of; nothing otherwise.
+    BOOST_CHECK(IsGoodNameText("core_2-x"));
+    BOOST_CHECK(!IsGoodNameText("Core"));
+    BOOST_CHECK(!IsGoodNameText("<b>x</b>"));
+    BOOST_CHECK(!IsGoodNameText(""));
+    BOOST_CHECK(!IsGoodNameText(std::string(256, 'a')));
+    NameRecord shown;
+    shown.text = "<img src=x>";
+    BOOST_CHECK_EQUAL(FullText(state.View(), shown), "");
+    shown.text = "fine";
+    BOOST_CHECK_EQUAL(FullText(state.View(), shown), "fine");
+}
+
+BOOST_AUTO_TEST_CASE(full_text_is_whole_or_nothing)
+{
+    // Deeper than FullText follows (possible before audit2_height): no text, rather than the text of
+    // the last 64 levels, which is the text of another name.
+    Consensus::BitNamesParams params;
+    params.audit2_height = 1000;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    // A public name, registered with its text.
+    const NameHash pub{HashName("open")};
+    const CMutableTransaction reserve{Tx({}, 0, 1, Reserve{ReservationCommitment(pub, uint256{4})}, 40)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 1, params, undo, reason));
+    Register reg{pub, uint256{4}, {}};
+    reg.text = "open";
+    const CMutableTransaction registration{Tx({COutPoint{reserve.GetHash(), 0}}, 1, 0, reg, 41)};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{registration}, 2, params, undo, reason), reason);
+    COutPoint at{registration.GetHash(), 0};
+    NameHash name{pub};
+    for (int depth{1}; depth <= 66; ++depth) {
+        CMutableTransaction tx{Tx({at}, 2, 0, RegisterSubname{"a", {}}, 50)};
+        tx.vin.emplace_back(COutPoint{Txid::FromUint256(uint256{static_cast<uint8_t>(depth)}), 9});
+        BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, 3, params, undo, reason), reason);
+        name = SubnameHash(name, "a");
+        at = COutPoint{tx.GetHash(), 1};
+        const std::string text{FullText(state.View(), state.Names().at(name))};
+        if (depth <= 64) {
+            BOOST_CHECK_EQUAL(text.size(), static_cast<size_t>(depth) * 2 + 4);
+        } else {
+            BOOST_CHECK_EQUAL(text, "");
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

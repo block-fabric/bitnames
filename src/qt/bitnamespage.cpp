@@ -42,9 +42,21 @@ const char* const GREY{"#6b7280"};
 const char* const PURPLE{"#8b5cf6"};
 const char* const RED{"#ef4444"};
 
+/**
+ * A label of plain text. A QLabel shows text that looks like HTML as HTML: what the chain holds
+ * (names, labels, addresses) is shown as it is, never rendered.
+ */
+QLabel* Plain(const QString& text, QWidget* parent)
+{
+    auto* label{new QLabel(parent)};
+    label->setTextFormat(Qt::PlainText);
+    label->setText(text);
+    return label;
+}
+
 QLabel* Dim(const QString& text, QWidget* parent)
 {
-    auto* label{new QLabel(text, parent)};
+    auto* label{Plain(text, parent)};
     label->setWordWrap(true);
     label->setEnabled(false);
     return label;
@@ -52,14 +64,14 @@ QLabel* Dim(const QString& text, QWidget* parent)
 
 QLabel* Heading(const QString& text, QWidget* parent)
 {
-    auto* label{new QLabel(text, parent)};
+    auto* label{Plain(text, parent)};
     label->setObjectName("sectionHeading");
     return label;
 }
 
 QLabel* Pill(const QString& text, const char* colour, QWidget* parent)
 {
-    auto* pill{new QLabel(text, parent)};
+    auto* pill{Plain(text, parent)};
     pill->setStyleSheet(QStringLiteral("color: white; background: %1; border-radius: 8px; padding: 1px 8px; font-size: 8pt; font-weight: bold;").arg(QLatin1String(colour)));
     return pill;
 }
@@ -204,7 +216,7 @@ BitNamesPage::BitNamesPage(NodeRpc::WalletNameFn wallet_name, QWidget* parent)
     m_tabs->addTab(createExploreTab(), tr("Explore"));
     m_tabs->addTab(createMessagesTab(), tr("Messages"));
     layout->addWidget(m_tabs, 1);
-    m_status = new QLabel(this);
+    m_status = Plain({}, this);
     m_status->setWordWrap(true);
     m_status->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(m_status);
@@ -309,7 +321,8 @@ QWidget* BitNamesPage::createExploreTab()
             const auto r{call("resolvename", Args({query.toStdString()}), false)};
             if (!r) return;
             QStringList lines{tr("<b>%1</b> — %2").arg(query.toHtmlEscaped(), Text((*r)["status"]))};
-            for (const UniValue& record : (*r)["records"].getValues()) lines << QStringLiteral("%1 &nbsp; <tt>%2</tt>").arg(Text(record["type"]), Text(record["data"]).toHtmlEscaped());
+            for (const UniValue& record : (*r)["records"].getValues()) lines << QStringLiteral("%1 &nbsp; <tt>%2</tt>").arg(Text(record["type"]).toHtmlEscaped(), Text(record["data"]).toHtmlEscaped());
+            m_resolved->setTextFormat(Qt::RichText);
             m_resolved->setText(lines.join(QStringLiteral("<br>")));
             m_resolved->show();
             return;
@@ -519,7 +532,7 @@ void BitNamesPage::getName(const QString& name, bool make_public)
         const QString entry{make_public ? name + QStringLiteral("\tpublic") : name};
         if (!pending.contains(entry)) pending << entry;
         settings.setValue(PendingKey(*wallet), pending);
-        say(tr("%1 is reserved: it is registered by itself after the next block, and is yours after the one after.").arg(name));
+        say(tr("%1 is reserved: this page registers it once the reservation is deep enough in the chain (a few blocks), and it is yours in the block after.").arg(name));
         m_mine_listed.clear();
         refresh();
     }
@@ -539,7 +552,7 @@ void BitNamesPage::showGetPanel()
     search->setPlaceholderText(tr("yourname"));
     search->setMinimumHeight(38);
     layout->addWidget(search);
-    auto* availability{new QLabel(panel)};
+    auto* availability{Plain({}, panel)};
     availability->setObjectName("availability");
     layout->addWidget(availability);
     auto* make_public{new QCheckBox(tr("Make it public"), panel)};
@@ -552,8 +565,9 @@ void BitNamesPage::showGetPanel()
     layout->addWidget(get, 0, Qt::AlignLeft);
     layout->addWidget(Heading(tr("How it works"), panel));
     layout->addWidget(Dim(tr("1. A reservation hides the name, so that nobody can see it coming and take it first. "
-                             "2. After the next block, this page registers it. 3. After the block after that, it is yours. "
-                             "Keep this page open meanwhile, or come back to it. A subname needs no reservation: it is yours after the next block."), panel));
+                             "2. Once the reservation is a few blocks deep (so that whoever makes a block cannot take the name as it is revealed), this page registers it. "
+                             "3. After the block after that, it is yours. Keep this page open meanwhile, or come back to it. "
+                             "A subname needs no reservation: it is yours after the next block, for as long as its parent is not released (see the subname's page)."), panel));
     layout->addStretch();
 
     // As the name is typed: whether it can be had.
@@ -588,6 +602,12 @@ void BitNamesPage::showGetPanel()
             return;
         }
         make_public->setEnabled(true);
+        for (const QChar c : name) {
+            if (!((c >= QLatin1Char('a') && c <= QLatin1Char('z')) || (c >= QLatin1Char('0') && c <= QLatin1Char('9')) || c == QLatin1Char('-') || c == QLatin1Char('_'))) {
+                colour(RED);
+                return availability->setText(tr("A name is lower-case letters, digits, - and _"));
+            }
+        }
         if (const auto info{call("getname", Args({name.toStdString()}), false, true)}) {
             colour(RED);
             return availability->setText(tr("%1 is taken (#%2)").arg(name, Text((*info)["seq"])));
@@ -641,10 +661,10 @@ void BitNamesPage::showReservation(const QString& name)
 {
     auto* panel{new QWidget};
     auto* layout{new QVBoxLayout(panel)};
-    auto* title{new QLabel(name.isEmpty() ? tr("A reservation") : name, panel)};
+    auto* title{Plain(name.isEmpty() ? tr("A reservation") : name, panel)};
     title->setObjectName("nameTitle");
     layout->addWidget(title);
-    layout->addWidget(Dim(tr("Reserved: it is registered by itself once the reservation is in a block. A reservation for a name that is taken "
+    layout->addWidget(Dim(tr("Reserved: it is registered by itself once the reservation is a few blocks deep. A reservation for a name that is taken "
                              "can be released."), panel));
     auto* release{new QPushButton(tr("Release this reservation"), panel)};
     release->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(RED)));
@@ -675,7 +695,7 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
     auto* layout{new QVBoxLayout(panel)};
 
     // What it is.
-    auto* title{new QLabel(shown.startsWith(QLatin1Char('#')) ? shown : shown + QStringLiteral(".x"), panel)};
+    auto* title{Plain(shown.startsWith(QLatin1Char('#')) ? shown : shown + QStringLiteral(".x"), panel)};
     title->setObjectName("nameTitle");
     title->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(title);
@@ -688,6 +708,12 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
     owner->setTextInteractionFlags(Qt::TextSelectableByMouse);
     tags->addWidget(owner, 1);
     layout->addLayout(tags);
+    if (subname) {
+        layout->addWidget(Dim(tr("A subname depends on its parent: if the holder of the parent releases it, this subname is released with it, "
+                                 "and whoever registers the parent next can make it again for someone else. The parent's holder can also "
+                                 "delegate the parent's domain elsewhere, which takes this subname's domain with it. Only the holder of this "
+                                 "subname updates it, gives it on or makes subnames of it."), panel));
+    }
 
     // Where it points: the DNS records, to edit in place.
     layout->addWidget(Heading(tr("Where it points"), panel));
@@ -756,7 +782,8 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
     }
     if (editable || !subnames.empty()) layout->addWidget(Heading(tr("Subnames"), panel));
     for (const auto& [label, holder] : subnames) {
-        auto* line{new QLabel(QStringLiteral("<b>%1.%2.x</b> &nbsp; <span style='color:%3'>held by %4</span>").arg(label.toHtmlEscaped(), shown.toHtmlEscaped(), QLatin1String(GREY), holder), panel)};
+        auto* line{new QLabel(QStringLiteral("<b>%1.%2.x</b> &nbsp; <span style='color:%3'>held by %4</span>").arg(label.toHtmlEscaped(), shown.toHtmlEscaped(), QLatin1String(GREY), holder.toHtmlEscaped()), panel)};
+        line->setTextFormat(Qt::RichText);
         line->setTextInteractionFlags(Qt::TextSelectableByMouse);
         layout->addWidget(line);
     }
@@ -854,7 +881,7 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
         });
         connect(release, &QPushButton::clicked, this, [this, handle, shown] {
             m_busy = true;
-            const bool yes{QMessageBox::warning(this, tr("Release %1").arg(shown), tr("Give up %1 for good? Its records go with it, and anyone can register it. This cannot be undone.").arg(shown),
+            const bool yes{QMessageBox::warning(this, tr("Release %1").arg(shown), tr("Give up %1 for good? Its records go with it, and so do all its subnames, at any depth, whoever holds them. Anyone can register it. This cannot be undone.").arg(shown),
                                                 QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes};
             m_busy = false;
             if (yes && call("releasename", Args({handle.toStdString(), true}), true)) say(tr("%1 is released after the next block.").arg(shown));

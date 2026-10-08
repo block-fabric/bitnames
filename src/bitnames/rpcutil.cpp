@@ -12,6 +12,7 @@
 #include <util/strencodings.h>
 #include <util/string.h>
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 
@@ -403,58 +404,79 @@ UniValue DataToJSON(const NameData& data)
     return obj;
 }
 
+bool IsGoodNameText(const std::string& text)
+{
+    if (text.empty() || text.size() > MAX_NAME_TEXT_SIZE) return false;
+    return std::all_of(text.begin(), text.end(), [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'; });
+}
+
+namespace {
+/** The text a top-level name is shown by: its public text, if it is of the characters names are made of (or the ICANN name it was marked as). */
+std::string ShownText(const NameRecord& record)
+{
+    if (record.icann && record.text == record.icann_name) return record.text;
+    return IsGoodNameText(record.text) ? record.text : std::string{};
+}
+} // namespace
+
 std::string FullText(const State& state, const NameRecord& record)
 {
-    std::string text{record.parent ? record.label : record.text};
+    std::string text{record.parent ? record.label : ShownText(record)};
+    if (text.empty()) return {};
     NameRecord at{record};
     for (int depth{0}; at.parent && depth < 64; ++depth) {
         auto parent{state.GetName(*at.parent)};
         if (!parent) return {};
         at = std::move(*parent);
-        const std::string part{at.parent ? at.label : at.text};
+        const std::string part{at.parent ? at.label : ShownText(at)};
         if (part.empty()) return {};
         text += "." + part;
     }
+    // Deeper than that: no text rather than a part of it, which would be the text of another name.
+    if (at.parent) return {};
     return text;
 }
 
-NameHash ParseNameArg(const UniValue& value, const State* state, const std::function<bool(const NameHash&)>& exists)
+NameHash ParseNameArg(const UniValue& value, const State& state)
+{
+    return ParseNameArg(value, [&](const NameHash& h) { return state.GetName(h); }, [&](uint32_t seq) { return state.NameOfSeq(seq); });
+}
+
+NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const std::function<std::optional<NameHash>(uint32_t)>& by_seq)
 {
     const std::string text{value.get_str()};
-    const auto known{[&](const NameHash& h) { return state ? state->HasName(h) : (exists && exists(h)); }};
-    // A subname: down from the last label, if each step is on the chain.
-    if (text.find('.') != std::string::npos && (state || exists)) {
-        std::vector<std::string> labels;
-        for (size_t start{0};;) {
-            const size_t end{std::min(text.find('.', start), text.size())};
-            labels.push_back(text.substr(start, end - start));
-            if (end == text.size()) break;
-            start = end + 1;
-        }
-        NameHash at{HashName(labels.back())};
-        bool found{known(at)};
-        for (size_t i{labels.size() - 1}; found && i-- > 0;) {
-            const NameHash parent{at};
-            at = SubnameHash(at, labels[i]);
-            found = known(at);
-            // With the state at hand: only a subname of this very name (not a top-level name registered by its hash).
-            if (found && state) {
-                const auto record{state->GetName(at)};
-                found = record && record->parent == parent && record->label == labels[i];
-            }
-        }
-        if (found) return at;
-    }
+    if (text.empty()) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is empty");
     if (text.size() == 66 && text.starts_with("0x")) {
         if (const auto hash{uint256::FromHex(text.substr(2))}) return *hash;
     }
-    if (state) {
+    if (by_seq) {
         if (const auto seq{ParseSeq(text)}) {
-            if (const auto name{state->NameOfSeq(*seq)}) return *name;
+            if (const auto name{by_seq(*seq)}) return *name;
         }
     }
-    if (text.empty()) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is empty");
-    return HashName(text);
+    // DNS looks names up in lower case: Core.x is core.x. Another name, of the hash of "Core", is
+    // not what is meant.
+    if (std::any_of(text.begin(), text.end(), [](char c) { return c >= 'A' && c <= 'Z'; })) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Names are lower case, as DNS looks them up: %s. A name registered by the hash of another text is given by its hash (\"0x\" and 64 hex digits)", ToLower(text)));
+    }
+    if (text.find('.') == std::string::npos) return HashName(text);
+    // A subname: down from the last label, each step a subname of the one above (not a top-level
+    // name registered by its hash).
+    std::vector<std::string> labels{util::SplitString(text, '.')};
+    NameHash at{HashName(labels.back())};
+    bool found{lookup(at).has_value()};
+    for (size_t i{labels.size() - 1}; found && i-- > 0;) {
+        const NameHash parent{at};
+        at = SubnameHash(at, labels[i]);
+        const auto record{lookup(at)};
+        found = record && record->parent == parent && record->label == labels[i];
+    }
+    if (found) return at;
+    // An ICANN name has dots: the authority vouches for its text.
+    if (const auto record{lookup(HashName(text))}; record && record->icann && record->icann_name == text) return HashName(text);
+    // Never the name whose hash is that of the dotted text: anyone can register a name by any hash,
+    // and what is sent to "pay.shop" would go to it.
+    throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("No such subname: %s (a name with dots is a subname, found from its last label down; a name registered by the hash of a text with dots is given by its hash)", text));
 }
 
 } // namespace bitnames

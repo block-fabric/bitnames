@@ -210,6 +210,26 @@ bitnames::NameData CurrentData(CWallet& wallet, const NameHash& name)
     return record->Current();
 }
 
+/** A name given to a command of the wallet: by text (a subname by its dotted text), hash, or number. */
+NameHash ParseName(CWallet& wallet, const UniValue& value)
+{
+    return bitnames::ParseNameArg(value, [&](const NameHash& h) { return wallet.chain().getBitName(h); });
+}
+
+/** The text of a name this wallet reserves or registers: what DNS can look up, and what is shown as it is. */
+void CheckNewName(const std::string& name)
+{
+    if (name.empty()) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is empty");
+    // A dot makes a name DNS cannot reach: blog.core.x is looked for under core. What is meant is a subname.
+    if (name.find('.') != std::string::npos) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A name has no dots: for %s, make a subname of %s with createsubname", name, name.substr(name.find('.') + 1)));
+    }
+    if (ToLower(name) != name) throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Names are lower case, as DNS looks them up: %s", ToLower(name)));
+    if (!bitnames::IsGoodNameText(name)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A name is 1 to %u lower-case letters, digits, - and _", bitnames::MAX_NAME_TEXT_SIZE));
+    }
+}
+
 } // namespace
 
 RPCMethod reservename()
@@ -233,11 +253,7 @@ RPCMethod reservename()
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
     const std::string name{request.params[0].get_str()};
-    if (name.empty()) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is empty");
-    // A dot makes a name DNS cannot reach: blog.core.x is looked for under core. What is meant is a subname.
-    if (name.find('.') != std::string::npos) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A name has no dots: for %s, make a subname of %s with createsubname", name, name.substr(name.find('.') + 1)));
-    }
+    CheckNewName(name);
     const NameHash hash{bitnames::HashName(name)};
     if (pwallet->chain().getBitName(hash)) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is taken");
     const CTxDestination dest{NewDestination(*pwallet, NameLabel(name))};
@@ -256,7 +272,8 @@ RPCMethod registername()
 {
     return RPCMethod{
         "registername",
-        "Take a name reserved with reservename, once the reservation is in a block." +
+        "Take a name reserved with reservename, once the reservation is deep enough in the chain (revealdepth in\n"
+        "getbitnamesinfo: so that whoever makes a block cannot see the name revealed and take it in that block)." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name"},
@@ -274,10 +291,20 @@ RPCMethod registername()
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
     const std::string name{request.params[0].get_str()};
+    CheckNewName(name);
     const NameHash hash{bitnames::HashName(name)};
     if (pwallet->chain().getBitName(hash)) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is taken");
     const auto reservation{FindReservation(*pwallet, hash)};
     if (!reservation) throw JSONRPCError(RPC_INVALID_PARAMETER, "This wallet has no reservation of the name in a block (see reservename)");
+    // Revealed only once the reservation is deep enough (see getbitnamesinfo).
+    if (const auto token{pwallet->chain().getBitNamesToken(reservation->first)}) {
+        const auto [params, next_height]{pwallet->chain().getBitNamesParams()};
+        const auto reserved_at{pwallet->chain().getBitNamesReservationHeight(Txid::FromUint256(token->id))};
+        if (reserved_at && next_height >= params.audit2_height && next_height - *reserved_at < params.reveal_depth) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The reservation is in block %d: it can be revealed from block %d, once it is %d blocks deep (the next block is %d)",
+                                                                *reserved_at, *reserved_at + params.reveal_depth, params.reveal_depth, next_height));
+        }
+    }
     Marker marker;
     bitnames::Register reg;
     reg.name = hash;
@@ -310,7 +337,7 @@ RPCMethod updatename()
 {
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
-    const NameHash hash{bitnames::ParseNameArg(request.params[0], nullptr, [&](const NameHash& h) { return pwallet->chain().getBitName(h).has_value(); })};
+    const NameHash hash{ParseName(*pwallet, request.params[0])};
     const auto owned{OwnedName(*pwallet, hash)};
     if (!owned) NotHeld(*pwallet, hash);
     Marker marker;
@@ -340,7 +367,7 @@ RPCMethod transfername()
 {
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
-    const NameHash hash{bitnames::ParseNameArg(request.params[0], nullptr, [&](const NameHash& h) { return pwallet->chain().getBitName(h).has_value(); })};
+    const NameHash hash{ParseName(*pwallet, request.params[0])};
     const CTxDestination dest{DecodeDestination(request.params[1].get_str())};
     if (!IsValidDestination(dest)) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
     const auto owned{OwnedName(*pwallet, hash)};
@@ -437,7 +464,7 @@ RPCMethod encryptnamemessage()
 {
     std::shared_ptr<CWallet> const pwallet = GetWalletForJSONRPCRequest(request);
     if (!pwallet) return UniValue::VNULL;
-    const bitnames::NameData data{CurrentData(*pwallet, bitnames::ParseNameArg(request.params[0], nullptr, [&](const NameHash& h) { return pwallet->chain().getBitName(h).has_value(); }))};
+    const bitnames::NameData data{CurrentData(*pwallet, ParseName(*pwallet, request.params[0]))};
     if (!data.encryption_key) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name has no encryption key");
     const std::string text{request.params[1].get_str()};
     const auto message{bitnames::EncryptMessage(CPubKey{*data.encryption_key}, std::span{UCharCast(text.data()), text.size()})};
@@ -488,7 +515,7 @@ RPCMethod signasname()
 {
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
-    const bitnames::NameData data{CurrentData(*pwallet, bitnames::ParseNameArg(request.params[0], nullptr, [&](const NameHash& h) { return pwallet->chain().getBitName(h).has_value(); }))};
+    const bitnames::NameData data{CurrentData(*pwallet, ParseName(*pwallet, request.params[0]))};
     if (!data.signing_key) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name has no signing key");
     // The key is the x coordinate: the wallet's key is one of the two points with it.
     std::optional<CKey> key;
@@ -526,7 +553,7 @@ RPCMethod sendpaymail()
 {
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
-    const NameHash name{bitnames::ParseNameArg(request.params[0], nullptr, [&](const NameHash& h) { return pwallet->chain().getBitName(h).has_value(); })};
+    const NameHash name{ParseName(*pwallet, request.params[0])};
     const bitnames::NameData data{CurrentData(*pwallet, name)};
     if (!data.encryption_key) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name has no encryption key");
     if (!data.paymail_fee) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name takes no paymail (it has no paymail fee)");
@@ -551,7 +578,9 @@ RPCMethod listpaymail()
 {
     return RPCMethod{
         "listpaymail",
-        "Paymail received by this wallet: payments with a message, decrypted where this wallet has the key." + HELP_REQUIRING_PASSPHRASE,
+        "Paymail received by this wallet: payments with a message, decrypted. Only those that paid at least the paymail fee\n"
+        "of a name of this wallet with the key the message is encrypted to, as the fee was when the payment was made, are\n"
+        "listed: anyone can send a message with any payment." + HELP_REQUIRING_PASSPHRASE,
         {},
         RPCResult{RPCResult::Type::ARR, "", "Newest first",
         {
@@ -561,7 +590,7 @@ RPCMethod listpaymail()
                 {RPCResult::Type::NUM, "vout", ""},
                 {RPCResult::Type::STR_AMOUNT, "amount", ""},
                 {RPCResult::Type::NUM, "confirmations", ""},
-                {RPCResult::Type::STR, "message", /*optional=*/true, "The text, if this wallet could decrypt it"},
+                {RPCResult::Type::STR, "message", /*optional=*/true, "The text, if it decrypts"},
             }},
         }},
         RPCExamples{HelpExampleCli("listpaymail", "")},
@@ -570,6 +599,23 @@ RPCMethod listpaymail()
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
     std::vector<std::pair<int64_t, UniValue>> mail;
+    // The names of this wallet: a message counts if it paid the fee of one with the key it is encrypted to.
+    std::vector<NameHash> names;
+    for (const OwnedToken& owned : OwnedTokens(*pwallet)) {
+        if (owned.token.kind == Token::Kind::NAME) names.push_back(owned.token.id);
+    }
+    const int tip{pwallet->chain().getBitNamesParams().second - 1};
+    const auto paid_enough{[&](const CPubKey& recipient, CAmount amount, int height) {
+        for (const NameHash& name : names) {
+            // As the sender saw it (the block before), or as the block left it.
+            for (const int at : {height - 1, height}) {
+                const auto data{pwallet->chain().getBitNameDataAtHeight(name, at)};
+                if (!data || !data->encryption_key || !data->paymail_fee) continue;
+                if (CPubKey{*data->encryption_key} == recipient && amount >= *data->paymail_fee) return true;
+            }
+        }
+        return false;
+    }};
     LOCK(pwallet->cs_wallet);
     for (const auto& [txid, wtx] : pwallet->mapWallet) {
         const CTransactionRef ptx{wtx.GetTx()};
@@ -577,15 +623,17 @@ RPCMethod listpaymail()
         if (!marker) continue;
         for (const auto& [n, memo] : marker->memos) {
             if (n >= ptx->vout.size() || !pwallet->IsMine(ptx->vout[n])) continue;
+            const auto recipient{bitnames::MessageRecipient(memo)};
+            if (!recipient) continue;
+            const auto* confirmed{wtx.state<TxStateConfirmed>()};
+            if (!paid_enough(*recipient, ptx->vout[n].nValue, confirmed ? confirmed->confirmed_block_height : tip)) continue;
             UniValue obj(UniValue::VOBJ);
             obj.pushKV("txid", txid.GetHex());
             obj.pushKV("vout", n);
             obj.pushKV("amount", ValueFromAmount(ptx->vout[n].nValue));
             obj.pushKV("confirmations", pwallet->GetTxDepthInMainChain(wtx));
-            if (const auto recipient{bitnames::MessageRecipient(memo)}) {
-                if (const auto key{PrivateKey(*pwallet, *recipient)}) {
-                    if (const auto text{bitnames::DecryptMessage(*key, memo)}) obj.pushKV("message", std::string{text->begin(), text->end()});
-                }
+            if (const auto key{PrivateKey(*pwallet, *recipient)}) {
+                if (const auto text{bitnames::DecryptMessage(*key, memo)}) obj.pushKV("message", std::string{text->begin(), text->end()});
             }
             mail.emplace_back(wtx.nTimeReceived, std::move(obj));
         }
@@ -630,7 +678,8 @@ RPCMethod releasename()
     return RPCMethod{
         "releasename",
         "Give up a name of this wallet for good: it leaves the registry, with its data, and anyone can register it again.\n"
-        "Its subnames stay with their holders." + HELP_REQUIRING_PASSPHRASE,
+        "Its subnames are released with it, at any depth, whoever holds them: whoever registers the name next starts with\n"
+        "none." + HELP_REQUIRING_PASSPHRASE,
         {
             {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, or its hash (\"0x\" and 64 hex digits)"},
             {"confirm", RPCArg::Type::BOOL, RPCArg::Optional::NO, "true: there is no undoing it"},
@@ -642,7 +691,7 @@ RPCMethod releasename()
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
     if (!request.params[1].get_bool()) throw JSONRPCError(RPC_INVALID_PARAMETER, "Releasing a name cannot be undone: pass true to confirm");
-    const NameHash hash{bitnames::ParseNameArg(request.params[0], nullptr, [&](const NameHash& h) { return pwallet->chain().getBitName(h).has_value(); })};
+    const NameHash hash{ParseName(*pwallet, request.params[0])};
     const auto owned{OwnedName(*pwallet, hash)};
     if (!owned) NotHeld(*pwallet, hash);
     Marker marker;
@@ -657,8 +706,11 @@ RPCMethod createsubname()
     return RPCMethod{
         "createsubname",
         "Make a subname of a name of this wallet, such as blog under core (blog.core, blog.core.x in DNS), and give it to an\n"
-        "address: this wallet's, or someone else's. A subname is a name of its own: its holder sets its data and records,\n"
-        "gives it on, and makes subnames of it. It cannot be taken back." + HELP_REQUIRING_PASSPHRASE,
+        "address: this wallet's, or someone else's. Only its holder sets its data and records, gives it on, and makes\n"
+        "subnames of it, and the holder of the parent cannot make another of the same label while it exists. But it\n"
+        "depends on its parent, as a DNS subdomain on its domain: if the parent is released, it is released with it\n"
+        "(whoever registers the parent next can make it again, for anyone), and a delegate in the records of the parent\n"
+        "takes its domain elsewhere. A name has at most 1000 names under it, at most 8 levels deep." + HELP_REQUIRING_PASSPHRASE,
         {
             {"parent", RPCArg::Type::STR, RPCArg::Optional::NO, "The name of this wallet to make it under, or its hash"},
             {"label", RPCArg::Type::STR, RPCArg::Optional::NO, "The label: lower-case letters, digits and hyphens"},
@@ -675,7 +727,7 @@ RPCMethod createsubname()
 {
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
-    const NameHash parent{bitnames::ParseNameArg(request.params[0], nullptr, [&](const NameHash& h) { return pwallet->chain().getBitName(h).has_value(); })};
+    const NameHash parent{ParseName(*pwallet, request.params[0])};
     const std::string label{request.params[1].get_str()};
     if (!bitnames::IsDnsLabel(label)) throw JSONRPCError(RPC_INVALID_PARAMETER, "A label is 1 to 63 lower-case letters, digits and hyphens, not at either end");
     const NameHash child{bitnames::SubnameHash(parent, label)};
@@ -745,7 +797,7 @@ RPCMethod setnamerecords()
 {
     const auto pwallet{ReadyWallet(request)};
     if (!pwallet) return UniValue::VNULL;
-    const NameHash hash{bitnames::ParseNameArg(request.params[0], nullptr, [&](const NameHash& h) { return pwallet->chain().getBitName(h).has_value(); })};
+    const NameHash hash{ParseName(*pwallet, request.params[0])};
     const auto owned{OwnedName(*pwallet, hash)};
     if (!owned) NotHeld(*pwallet, hash);
     bitnames::NameUpdates updates;

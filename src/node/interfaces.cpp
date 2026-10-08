@@ -747,6 +747,19 @@ public:
         }
         return labels;
     }
+    std::optional<int> getBitNamesReservationHeight(const Txid& id) override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().SideState().BitNames().ReservationHeight(id);
+    }
+    std::optional<bitnames::NameData> getBitNameDataAtHeight(const bitnames::NameHash& name, int height) override
+    {
+        LOCK(::cs_main);
+        const bitnames::State names{chainman().ActiveChainstate().SideState().BitNames()};
+        const auto record{names.GetName(name)};
+        if (!record) return std::nullopt;
+        return names.DataAtHeight(*record, height);
+    }
     std::pair<Consensus::BitNamesParams, int> getBitNamesParams() override
     {
         LOCK(::cs_main);
