@@ -277,15 +277,17 @@ UniValue RootNode(const NameRecord& record)
     return root;
 }
 
-/** The name a "delegate" entry names: its text, or the hash of a name ("0x" + 64 hex digits). */
-std::optional<NameHash> DelegateTarget(const UniValue& value)
+/**
+ * The name a "delegate" entry names: a name, a subname (blog.core, down the subnames as commands read
+ * it: never the top-level name of the hash of that text, which anyone can register), or the hash of a
+ * name ("0x" + 64 hex digits).
+ */
+std::optional<NameHash> DelegateTarget(const UniValue& value, const NameLookup& lookup)
 {
-    if (!value.isStr() || value.get_str().empty()) return std::nullopt;
-    const std::string& text{value.get_str()};
-    if (text.size() == 66 && text.starts_with("0x")) {
-        if (const auto hash{uint256::FromHex(text.substr(2))}) return *hash;
-    }
-    return HashName(ToLower(text));
+    if (!value.isStr()) return std::nullopt;
+    std::string error;
+    // In any case, as DNS reads names (records written before RecordsFromRows checked them may have it).
+    return ResolveNameText(ToLower(value.get_str()), lookup, /*by_seq=*/{}, error);
 }
 } // namespace
 
@@ -306,14 +308,24 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
         return answer;
     }
     if (labels.size() == 1) return answer;
-    // The records looked at, kept here: the store gives copies.
+    if (labels.size() > MAX_DNS_LABELS) {
+        answer.rcode = REFUSED;
+        return answer;
+    }
+    // The records looked at, kept here: the store gives copies. At most MAX_DNS_READS of them.
     std::vector<std::unique_ptr<NameRecord>> seen;
+    int reads{0};
+    const auto read{[&](const NameHash& hash) -> std::optional<NameRecord> {
+        if (++reads > MAX_DNS_READS) return std::nullopt;
+        return state.GetName(hash);
+    }};
     const auto lookup{[&](const NameHash& hash) -> const NameRecord* {
-        auto record{state.GetName(hash)};
+        auto record{read(hash)};
         if (!record) return nullptr;
         seen.push_back(std::make_unique<NameRecord>(std::move(*record)));
         return seen.back().get();
     }};
+    const auto over{[&] { return reads > MAX_DNS_READS; }};
     NameHash current{HashName(labels[labels.size() - 2])};
     const NameRecord* record{lookup(current)};
     if (!record) {
@@ -327,7 +339,7 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
     // A node that delegates to another name stands for the records of that name.
     const auto follow{[&]() -> bool {
         while (node.isObject() && node.exists("delegate")) {
-            const auto target{DelegateTarget(node["delegate"])};
+            const auto target{DelegateTarget(node["delegate"], read)};
             const NameRecord* other{target ? lookup(*target) : nullptr};
             if (!other || ++delegations > 8) return false;
             current = *target;
@@ -336,7 +348,7 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
         }
         return true;
     }};
-    if (!follow()) {
+    if (!follow() || over()) {
         answer.rcode = SERVFAIL;
         return answer;
     }
@@ -346,8 +358,13 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
     for (size_t i{labels.size() - 2}; i-- > 0;) {
         const std::string& label{labels[i]};
         const NameHash sub{SubnameHash(current, label)};
+        const NameRecord* subname{lookup(sub)};
+        if (over()) {
+            answer.rcode = SERVFAIL;
+            return answer;
+        }
         // Only a subname of this very name: a top-level name registered by the hash of a subname is none.
-        if (const NameRecord* subname{lookup(sub)}; subname && subname->parent == current && subname->label == label) {
+        if (subname && subname->parent == current && subname->label == label) {
             current = sub;
             record = subname;
             node = RootNode(*subname);
@@ -363,7 +380,7 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
                 return answer;
             }
         }
-        if (!follow()) {
+        if (!follow() || over()) {
             answer.rcode = SERVFAIL;
             return answer;
         }
@@ -451,6 +468,15 @@ std::vector<unsigned char> DnsRespond(const std::vector<unsigned char>& query, c
     return reply(answer.rcode, question_end, answer.records, ToLower(qname));
 }
 
+std::string DnsSourceKey(const CNetAddr& address)
+{
+    if (address.IsIPv6()) {
+        const std::vector<unsigned char> bytes{address.GetAddrBytes()};
+        return "6:" + HexStr(std::span{bytes}.first(std::min<size_t>(8, bytes.size())));
+    }
+    return address.ToStringAddr();
+}
+
 void DnsRateLimiter::Refill(Bucket& bucket, double rate, double burst, Clock::time_point now)
 {
     const double elapsed{std::chrono::duration<double>(now - bucket.last).count()};
@@ -467,7 +493,11 @@ bool DnsRateLimiter::Allow(const std::string& source, Clock::time_point now)
     auto it{m_sources.find(source)};
     if (it == m_sources.end()) {
         if (m_sources.size() >= m_limits.max_sources) {
-            // Forget the sources whose bucket is full again: they are as if never seen.
+            // Forget the sources whose bucket is full again: they are as if never seen. Once per
+            // interval at most: until the next pass, new sources wait.
+            if (m_last_sweep && now - *m_last_sweep < m_limits.sweep_interval) return false;
+            m_last_sweep = now;
+            ++m_sweeps;
             std::erase_if(m_sources, [&](auto& entry) {
                 Refill(entry.second, m_limits.source_rate, m_limits.source_burst, now);
                 return entry.second.tokens >= m_limits.source_burst;
@@ -540,7 +570,7 @@ private:
             // failure of this answer only.
             try {
                 // The lock is held for one answer: a few reads of records of bounded size (the
-                // history of a name is kept apart from it), at most one per label and delegation.
+                // history of a name is kept apart from it), MAX_DNS_READS at most.
                 LOCK(::cs_main);
                 return Resolve(chainman.ActiveChainstate().SideState().BitNames(), qname, qtype);
             } catch (const std::exception& e) {
@@ -557,7 +587,7 @@ private:
             if (received <= 0) continue;
             CService source;
             if (!source.SetSockAddr(reinterpret_cast<const sockaddr*>(&from), from_length)) continue;
-            if (!m_limiter.Allow(source.ToStringAddr(), DnsRateLimiter::Clock::now())) continue;
+            if (!m_limiter.Allow(DnsSourceKey(source), DnsRateLimiter::Clock::now())) continue;
             const std::vector<unsigned char> query(buffer.begin(), buffer.begin() + received);
             const std::vector<unsigned char> response{DnsRespond(query, resolve)};
             if (response.empty()) continue;

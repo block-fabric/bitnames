@@ -16,6 +16,7 @@
 #include <vector>
 
 class ArgsManager;
+class CNetAddr;
 class ChainstateManager;
 
 /**
@@ -30,6 +31,17 @@ namespace bitnames {
 inline const std::string DNS_TLD{"x"};
 inline constexpr uint16_t DEFAULT_DNS_PORT{5335};
 inline constexpr uint32_t DNS_TTL{60};
+/**
+ * Most labels of a question answered (example: www.blog.core.x is 4): the top-level domain, a name,
+ * MAX_SUBNAME_DEPTH subnames and a few hosts of the records under them. Longer ones are refused before
+ * anything is read.
+ */
+inline constexpr size_t MAX_DNS_LABELS{16};
+/**
+ * Most names read from the state for one answer (each label, each delegation, each step down the
+ * subnames a delegation names): the chain's lock is held while they are read. Beyond it, SERVFAIL.
+ */
+inline constexpr int MAX_DNS_READS{48};
 
 namespace dns {
 enum Type : uint16_t { A = 1, NS = 2, CNAME = 5, SOA = 6, MX = 15, TXT = 16, AAAA = 28, SRV = 33, TLSA = 52, ANY = 255 };
@@ -60,7 +72,13 @@ std::optional<uint16_t> ParseType(const std::string& name);
 dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype);
 
 /**
- * How many questions the DNS server answers: a token bucket per source address, and one for all
+ * The source a question is counted against: an IPv4 address, or the /64 network of an IPv6 address
+ * (whoever has one address of a /64 has them all).
+ */
+std::string DnsSourceKey(const CNetAddr& address);
+
+/**
+ * How many questions the DNS server answers: a token bucket per source (DnsSourceKey), and one for all
  * of them. Over UDP the source can be forged, and an answer is larger than its question: without a
  * limit the server would send a flood to whoever a forger names, and hold the chain's lock for each.
  */
@@ -71,16 +89,22 @@ public:
     struct Limits {
         double source_rate{20};
         double source_burst{40};
-        double total_rate{1000};
-        double total_burst{2000};
+        //! A local bridge for the names, not a public resolver: a few hundred questions a second.
+        double total_rate{200};
+        double total_burst{400};
         //! Sources remembered at most; beyond that, those whose bucket is full again are forgotten.
         size_t max_sources{10000};
+        //! How often, at most, the sources are looked through for those to forget: a flood of new
+        //! (forged) sources costs one pass over the table per interval, not one per question.
+        std::chrono::milliseconds sweep_interval{1000};
     };
     DnsRateLimiter() : DnsRateLimiter(Limits{}) {}
     explicit DnsRateLimiter(const Limits& limits) : m_limits{limits}, m_total{limits.total_burst, {}} {}
     /** Whether a question from `source` at `now` may be answered; it is counted if so. */
     bool Allow(const std::string& source, Clock::time_point now);
     size_t Sources() const { return m_sources.size(); }
+    /** How many times the sources were looked through for those to forget. */
+    uint64_t Sweeps() const { return m_sweeps; }
 
 private:
     struct Bucket {
@@ -92,6 +116,8 @@ private:
     Limits m_limits;
     Bucket m_total;
     bool m_started{false};
+    std::optional<Clock::time_point> m_last_sweep;
+    uint64_t m_sweeps{0};
     std::unordered_map<std::string, Bucket> m_sources;
 };
 

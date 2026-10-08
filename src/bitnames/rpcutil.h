@@ -53,6 +53,8 @@ NameHash ParseNameArg(const UniValue& value, const State& state);
 std::string FullText(const State& state, const NameRecord& record);
 /** Whether text is what the wallet makes names of, and shows: 1 to 255 lower-case letters, digits, '-' and '_'. */
 bool IsGoodNameText(const std::string& text);
+/** Whether text has the form of a name ResolveNameText may find: labels of IsGoodNameText, or a hash. */
+bool IsNameTextForm(const std::string& text);
 
 /**
  * DNS records as rows: {"host": "@" or a label under the name ("www", "a.b"), "type": "A", "value": ...,

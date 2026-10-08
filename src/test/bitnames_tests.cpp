@@ -6,6 +6,7 @@
 #include <bitnames/rpcutil.h>
 #include <bitnames/state.h>
 #include <key.h>
+#include <netbase.h>
 #include <script/script.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
@@ -1144,6 +1145,125 @@ BOOST_AUTO_TEST_CASE(subname_made_again_sweeps_its_orphans)
     BOOST_CHECK_EQUAL(state.Names().at(HashName("g")).descendants, 1U);
     state.Revert(block);
     BOOST_CHECK(state == before);
+}
+
+BOOST_AUTO_TEST_CASE(dns_delegate_to_a_subname)
+{
+    // A delegate with dots names a subname, found down from its last label, as commands read names:
+    // never the top-level name of the hash of that text, which anyone can register.
+    Consensus::BitNamesParams params;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    NameData alice;
+    alice.ipv4 = SocketV4{{192, 0, 2, 1}, 80};
+    const COutPoint alice_out{Registered(state, "alice", alice, 20, params)};
+    RegisterSubname blog{"blog", {}};
+    blog.data.ipv4 = SocketV4{{198, 51, 100, 5}, 80};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({alice_out}, 2, 0, blog, 40)}, 3, params, undo, reason), reason);
+    const NameHash blog_hash{SubnameHash(HashName("alice"), "blog")};
+    // The squat: a top-level name of the hash of "blog.alice".
+    NameData squat;
+    squat.ipv4 = SocketV4{{6, 6, 6, 6}, 80};
+    const CMutableTransaction reserve{Reservation(HashName("blog.alice"), uint256{3}, 30)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 3, params, undo, reason));
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{Tx({COutPoint{reserve.GetHash(), 0}}, 1, 0, Register{HashName("blog.alice"), uint256{3}, squat}, 31)}, 4, params, undo, reason));
+    NameData core;
+    core.records = strprintf(R"({"map": {"shop": {"delegate": "blog.alice"}, "byhash": {"delegate": "0x%s"}, "up": {"delegate": "Alice"},
+                                         "fake": {"delegate": "%s"}, "none": {"delegate": "nope.alice"}}})",
+                             blog_hash.GetHex(), "\xd0\xb0lice");
+    Registered(state, "core", core, 10, params);
+    BOOST_CHECK((Texts(Resolve(state, "shop.core.x", dns::A)) == std::vector<std::string>{"A 198.51.100.5"}));
+    BOOST_CHECK((Texts(Resolve(state, "byhash.core.x", dns::A)) == std::vector<std::string>{"A 198.51.100.5"}));
+    BOOST_CHECK((Texts(Resolve(state, "up.core.x", dns::A)) == std::vector<std::string>{"A 192.0.2.1"}));
+    // A look-alike of another script, or a subname there is not: no answer, never the squat's.
+    BOOST_CHECK_EQUAL(Resolve(state, "fake.core.x", dns::A).rcode, dns::SERVFAIL);
+    BOOST_CHECK_EQUAL(Resolve(state, "none.core.x", dns::A).rcode, dns::SERVFAIL);
+    // The rows of setnamerecords: a delegate is a name, a subname or a hash.
+    const auto row{[](const std::string& value) {
+        UniValue rows(UniValue::VARR);
+        UniValue r(UniValue::VOBJ);
+        r.pushKV("host", "shop");
+        r.pushKV("type", "DELEGATE");
+        r.pushKV("value", value);
+        rows.push_back(r);
+        return rows;
+    }};
+    BOOST_CHECK_NO_THROW(RecordsFromRows(row("blog.alice")));
+    BOOST_CHECK_NO_THROW(RecordsFromRows(row("alice")));
+    BOOST_CHECK_NO_THROW(RecordsFromRows(row("0x" + blog_hash.GetHex())));
+    BOOST_CHECK_THROW(RecordsFromRows(row("Alice")), UniValue);
+    BOOST_CHECK_THROW(RecordsFromRows(row("\xd0\xb0lice")), UniValue);
+    BOOST_CHECK_THROW(RecordsFromRows(row("a..b")), UniValue);
+    BOOST_CHECK_THROW(RecordsFromRows(row("")), UniValue);
+}
+
+BOOST_AUTO_TEST_CASE(dns_bounded_work)
+{
+    // A question has at most MAX_DNS_LABELS labels, and an answer reads at most MAX_DNS_READS names.
+    Consensus::BitNamesParams params;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    std::string long_name;
+    for (size_t i{0}; i < MAX_DNS_LABELS; ++i) long_name += "a.";
+    BOOST_CHECK_EQUAL(Resolve(state, long_name + "x", dns::A).rcode, dns::REFUSED);
+    long_name.erase(0, 2);
+    BOOST_CHECK_EQUAL(Resolve(state, long_name + "x", dns::A).rcode, dns::NXDOMAIN);
+    // The deepest subname, through a delegation: answered.
+    COutPoint at{Registered(state, "deep", {}, 10, params)};
+    std::string path{"deep"};
+    for (uint32_t depth{1}; depth <= MAX_SUBNAME_DEPTH; ++depth) {
+        RegisterSubname sub{"l", {}};
+        if (depth == MAX_SUBNAME_DEPTH) sub.data.ipv4 = SocketV4{{198, 51, 100, 8}, 0};
+        const CMutableTransaction tx{Tx({at}, 2, 0, sub, static_cast<uint8_t>(40 + depth))};
+        BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, 3, params, undo, reason), reason);
+        at = COutPoint{tx.GetHash(), 1};
+        path = "l." + path;
+    }
+    NameData far;
+    far.records = strprintf(R"({"delegate": "%s"})", path);
+    Registered(state, "far", far, 60, params);
+    BOOST_CHECK((Texts(Resolve(state, "far.x", dns::A)) == std::vector<std::string>{"A 198.51.100.8"}));
+    BOOST_CHECK((Texts(Resolve(state, path + ".x", dns::A)) == std::vector<std::string>{"A 198.51.100.8"}));
+    // Delegations that go round: no answer.
+    NameData one, two;
+    one.records = R"({"delegate": "two"})";
+    two.records = R"({"delegate": "one"})";
+    Registered(state, "one", one, 70, params);
+    Registered(state, "two", two, 80, params);
+    BOOST_CHECK_EQUAL(Resolve(state, "one.x", dns::A).rcode, dns::SERVFAIL);
+}
+
+BOOST_AUTO_TEST_CASE(dns_rate_limit_sources)
+{
+    // A source is an IPv4 address or an IPv6 /64.
+    const auto key{[](const std::string& text) { return DnsSourceKey(*Assert(LookupHost(text, false))); }};
+    BOOST_CHECK_EQUAL(key("2001:db8:1:2::1"), key("2001:db8:1:2:ffff::9"));
+    BOOST_CHECK(key("2001:db8:1:2::1") != key("2001:db8:1:3::1"));
+    BOOST_CHECK_EQUAL(key("203.0.113.7"), "203.0.113.7");
+    BOOST_CHECK(key("203.0.113.7") != key("203.0.113.8"));
+    // A flood of new sources while the table is full: one pass over it per interval, not one per question.
+    DnsRateLimiter::Limits limits;
+    limits.source_rate = 10;
+    limits.source_burst = 20;
+    limits.max_sources = 3;
+    DnsRateLimiter limiter{limits};
+    const auto t0{DnsRateLimiter::Clock::now()};
+    // Three sources, each with its burst spent: their buckets are not full again for a while.
+    for (const char* source : {"a", "b", "c"}) {
+        for (int i{0}; i < 20; ++i) BOOST_CHECK(limiter.Allow(source, t0));
+    }
+    const auto t1{t0 + std::chrono::milliseconds{100}};
+    for (int i{0}; i < 1000; ++i) BOOST_CHECK(!limiter.Allow(strprintf("n%d", i), t1));
+    BOOST_CHECK_EQUAL(limiter.Sweeps(), 1U);
+    BOOST_CHECK(limiter.Allow("a", t1));
+    // Once the interval is over, and the buckets full again, a new source is let in.
+    const auto t2{t0 + std::chrono::milliseconds{2500}};
+    BOOST_CHECK(limiter.Allow("new", t2));
+    BOOST_CHECK_EQUAL(limiter.Sweeps(), 2U);
+    // The global rate is a local bridge's.
+    BOOST_CHECK_LE(DnsRateLimiter::Limits{}.total_rate, 200);
 }
 
 BOOST_AUTO_TEST_CASE(names_given_by_text_number_or_hash)

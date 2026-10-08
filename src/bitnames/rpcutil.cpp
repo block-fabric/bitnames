@@ -299,6 +299,8 @@ std::string RecordsFromRows(const UniValue& rows)
             if (node.values.contains("alias")) throw JSONRPCError(RPC_INVALID_PARAMETER, "One CNAME per host");
             node.values["alias"].push_back(UniValue{value});
         } else if (type == "DELEGATE") {
+            // As DNS follows it: a name, a subname (blog.core) or a hash ("0x" and 64 hex digits).
+            if (!IsNameTextForm(value)) throw JSONRPCError(RPC_INVALID_PARAMETER, "DELEGATE: a name, a subname such as blog.core (lower-case letters, digits, - and _), or the hash of a name (\"0x\" and 64 hex digits)");
             node.values["delegate"] = {UniValue{value}};
         } else if (type == "TXT") {
             node.values["txt"].push_back(UniValue{value});
@@ -496,6 +498,13 @@ NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const Seq
     const auto name{ResolveNameText(value.get_str(), lookup, by_seq, error)};
     if (!name) throw JSONRPCError(RPC_INVALID_PARAMETER, error);
     return *name;
+}
+
+bool IsNameTextForm(const std::string& text)
+{
+    if (text.size() == 66 && text.starts_with("0x") && uint256::FromHex(text.substr(2))) return true;
+    const std::vector<std::string> labels{util::SplitString(text, '.')};
+    return !text.empty() && std::all_of(labels.begin(), labels.end(), IsGoodNameText);
 }
 
 } // namespace bitnames
