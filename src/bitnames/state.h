@@ -106,6 +106,16 @@ inline constexpr uint32_t MAX_SUBNAME_DEPTH{8};
  * whoever builds it a thousand transactions.
  */
 inline constexpr uint32_t MAX_SUBNAMES{1000};
+/**
+ * Policy, not consensus: how many names one transaction may release in all (names it releases, the
+ * subnames they take with them, a squat a subname replaces and what is under it, subnames left under a
+ * name registered again) to be taken into the mempool and kept there. The mempool checks a transaction
+ * when it comes and again after every block, under cs_main, and the names a transaction releases are
+ * counted as they are found, so that the check stops there: one name with all the names a name may
+ * have under it is let through. A block may release more: each name is released once, and was made by
+ * a transaction of its own, so the work of a block is bounded by what was paid for.
+ */
+inline constexpr uint32_t MAX_RELAYED_RELEASE{MAX_SUBNAMES + 1};
 
 struct SocketV4 {
     std::array<uint8_t, 4> ip{};
@@ -437,8 +447,12 @@ public:
      * changes nothing.
      */
     [[nodiscard]] bool ApplyTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason);
-    /** Whether ApplyTx would accept the transaction now. */
-    [[nodiscard]] bool CheckTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason) const;
+    /**
+     * Whether ApplyTx would accept the transaction now. With `max_released` (policy), a transaction that
+     * releases more names than that is refused with "bn-release-too-large", once that many are found.
+     */
+    [[nodiscard]] bool CheckTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason,
+                               std::optional<uint32_t> max_released = std::nullopt) const;
     /** What the inputs of a transaction carry that this state knows of, in the order of the inputs. */
     std::vector<std::pair<uint32_t, Token>> SpentTokens(const CTransaction& tx) const;
 
@@ -473,9 +487,13 @@ public:
 private:
     struct Plan;
     /** Everything ApplyTx would do, worked out without changing anything. */
-    std::optional<Plan> MakePlan(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason) const;
-    /** Add the descendants of `roots` to the names a plan releases, and the tokens of `roots` and of them to what it spends. @return roots and descendants */
-    std::set<NameHash> ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const;
+    std::optional<Plan> MakePlan(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason,
+                                 std::optional<uint32_t> max_released = std::nullopt) const;
+    /**
+     * Add the descendants of `roots` to the names a plan releases, and the tokens of `roots` and of them to
+     * what it spends. @return roots and descendants; nullopt once the plan releases more names than its limit.
+     */
+    std::optional<std::set<NameHash>> ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const;
     /** Add to a plan the names above `gone` (released or replaced names), with the names they lose counted out. */
     void CountOut(Plan& plan, const std::set<NameHash>& gone) const;
     std::optional<uint64_t> OrderOf(const Txid& id) const;

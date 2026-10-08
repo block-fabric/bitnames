@@ -825,8 +825,9 @@ bool MemPoolAccept::DrivechainChecks(Workspace& ws)
             }
         }
         const int height{m_active_chainstate.m_chain.Height() + 1};
-        if (!side.BitNames().CheckTx(tx, height, side_params.bitnames, reject_reason)) {
-            return ws.m_state.Invalid(TxValidationResult::TX_CONSENSUS, reject_reason);
+        // Releasing many names is for a block to do, not the mempool (bitnames::MAX_RELAYED_RELEASE).
+        if (!side.BitNames().CheckTx(tx, height, side_params.bitnames, reject_reason, bitnames::MAX_RELAYED_RELEASE)) {
+            return ws.m_state.Invalid(reject_reason == "bn-release-too-large" ? TxValidationResult::TX_MEMPOOL_POLICY : TxValidationResult::TX_CONSENSUS, reject_reason);
         }
         // One registration of a name at a time: the second could never be mined.
         if (const auto marker{bitnames::GetMarker(tx)}; marker && marker->operation) {
@@ -5149,7 +5150,8 @@ void Chainstate::RemoveStaleDrivechainTxs()
         std::string reject_reason;
         for (const Txid& txid : m_mempool->m_bitnames_txs) {
             const CTransactionRef tx{m_mempool->get(txid)};
-            if (tx && !SideState().BitNames().CheckTx(*tx, tip->nHeight + 1, m_chainman.GetConsensus().sidechain.bitnames, reject_reason)) stale.push_back(tx);
+            // Bounded as when it came: what it releases may have grown since.
+            if (tx && !SideState().BitNames().CheckTx(*tx, tip->nHeight + 1, m_chainman.GetConsensus().sidechain.bitnames, reject_reason, bitnames::MAX_RELAYED_RELEASE)) stale.push_back(tx);
         }
     }
 

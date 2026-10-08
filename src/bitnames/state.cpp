@@ -433,6 +433,17 @@ struct State::Plan {
     std::vector<Txid> reservations_released;
     //! Values to add to the history of names.
     std::vector<HistoryEntry> history;
+    //! Policy: the most names the plan may release in all (see MAX_RELAYED_RELEASE).
+    std::optional<uint32_t> max_released;
+    //! Whether it releases more.
+    bool too_many_released{false};
+
+    /** Whether the plan releases more names than it may: `more` beyond those it lists. */
+    bool OverLimit(size_t more = 0)
+    {
+        if (max_released && names_released.size() + names_replaced.size() + more > *max_released) too_many_released = true;
+        return too_many_released;
+    }
 };
 
 namespace {
@@ -672,24 +683,33 @@ std::vector<std::pair<uint32_t, Token>> State::SpentTokens(const CTransaction& t
     return spent;
 }
 
-std::set<NameHash> State::ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const
+std::optional<std::set<NameHash>> State::ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const
 {
-    // Down from the roots, through the index of names by parent.
+    // Down from the roots, through the index of names by parent, no further than the plan may go.
     std::set<NameHash> gone{roots.begin(), roots.end()};
     std::vector<NameHash> todo{roots};
+    if (plan.OverLimit()) return std::nullopt;
     while (!todo.empty()) {
         const NameHash at{todo.back()};
         todo.pop_back();
         sidechain::StoreBytes prefix{CHILDREN};
         sidechain::KeyCodec<uint256>::Encode(prefix, at);
-        for (const auto& rest : Under(*m_view, prefix)) {
-            std::span<const unsigned char> in{rest};
+        bool over{false};
+        m_view->ForEach(prefix, [&](const sidechain::StoreBytes& key, const sidechain::StoreBytes&) {
+            std::span<const unsigned char> in{key};
+            in = in.subspan(prefix.size());
             const NameHash child{sidechain::KeyCodec<uint256>::Decode(in)};
             if (gone.insert(child).second) {
                 plan.names_released.push_back(child);
                 todo.push_back(child);
+                if (plan.OverLimit()) {
+                    over = true;
+                    return false;
+                }
             }
-        }
+            return true;
+        });
+        if (over) return std::nullopt;
     }
     // Their holders keep the coins, which no longer carry a name; the roots' tokens too (a released
     // name's own token is spent by the transaction, unless it is a squat that gives way).
@@ -726,12 +746,14 @@ void State::CountOut(Plan& plan, const std::set<NameHash>& gone) const
     for (auto& [name, record] : above) plan.names.emplace_back(name, std::move(record));
 }
 
-std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason) const
+std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason,
+                                           std::optional<uint32_t> max_released) const
 {
     const auto invalid{[&](const char* reason) -> std::optional<Plan> {
         reject_reason = reason;
         return std::nullopt;
     }};
+    const char* const too_large{"bn-release-too-large"};
     if (!CheckMarker(tx, reject_reason)) return std::nullopt;
     std::string error;
     const auto marker{GetMarker(tx, &error)};
@@ -753,6 +775,7 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
     const Txid txid{tx.GetHash()};
 
     Plan plan;
+    plan.max_released = max_released;
     for (const auto& [n, token] : spent) plan.spent.push_back(tx.vin[n].prevout);
     std::vector<NameHash> names_out{names_in};
     std::vector<Token> reservations_out{reservations_in};
@@ -861,11 +884,12 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             }
             if (!orphans.empty()) {
                 plan.names_released.insert(plan.names_released.end(), orphans.begin(), orphans.end());
-                const std::set<NameHash> gone{ReleaseDescendants(plan, orphans)};
+                const auto gone{ReleaseDescendants(plan, orphans)};
+                if (!gone) return invalid(too_large);
                 // None of them carried on: an output would carry a name that is no more, and control
                 // it again once someone registers it anew.
                 for (const NameHash& name : names_in) {
-                    if (gone.contains(name)) return invalid("bad-bn-released-name-kept");
+                    if (gone->contains(name)) return invalid("bad-bn-released-name-kept");
                 }
             }
         }
@@ -904,6 +928,7 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
     } else if (op && std::holds_alternative<Release>(*op)) {
         if (bo > bi || ro > ri || bo + ro == bi + ri) return invalid("bad-bn-unbalanced");
         // The names and reservations carried on are the first spent; the rest go.
+        if (plan.OverLimit(bi - bo)) return invalid(too_large);
         for (size_t i{bo}; i < bi; ++i) {
             if (!HasName(names_in[i])) return invalid("bad-bn-name-unknown");
             plan.names_released.push_back(names_in[i]);
@@ -911,7 +936,9 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         std::set<NameHash> released;
         if (height >= params.audit_rules_height) {
             // The subnames of the released names, at any depth, go with them.
-            released = ReleaseDescendants(plan, plan.names_released);
+            auto gone{ReleaseDescendants(plan, plan.names_released)};
+            if (!gone) return invalid(too_large);
+            released = std::move(*gone);
             for (size_t i{0}; i < bo; ++i) {
                 if (released.contains(names_in[i])) return invalid("bad-bn-release-subname-kept");
             }
@@ -936,11 +963,12 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             // whatever was made under it; a real subname of that label is taken.
             if (taken->parent || height < params.audit_rules_height) return invalid("bad-bn-name-taken");
             plan.names_replaced.push_back(child);
-            const std::set<NameHash> gone{ReleaseDescendants(plan, {child})};
+            const auto gone{ReleaseDescendants(plan, {child})};
+            if (!gone) return invalid(too_large);
             // Neither the squat nor anything under it carried on: the subname would be on two outputs,
             // or an output would carry a name that is no more.
             for (const NameHash& name : names_in) {
-                if (gone.contains(name)) return invalid("bad-bn-released-name-kept");
+                if (gone->contains(name)) return invalid("bad-bn-released-name-kept");
             }
         } else if (height >= params.audit2_height) {
             // Subnames left under it by an earlier holder, released before releasing took them along
@@ -949,9 +977,10 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             const std::vector<NameHash> orphans{ChildrenOf(child)};
             if (!orphans.empty()) {
                 plan.names_released.insert(plan.names_released.end(), orphans.begin(), orphans.end());
-                const std::set<NameHash> gone{ReleaseDescendants(plan, orphans)};
+                const auto gone{ReleaseDescendants(plan, orphans)};
+                if (!gone) return invalid(too_large);
                 for (const NameHash& name : names_in) {
-                    if (gone.contains(name)) return invalid("bad-bn-released-name-kept");
+                    if (gone->contains(name)) return invalid("bad-bn-released-name-kept");
                 }
             }
         }
@@ -996,9 +1025,9 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
     return plan;
 }
 
-bool State::CheckTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason) const
+bool State::CheckTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason, std::optional<uint32_t> max_released) const
 {
-    return MakePlan(tx, height, params, reject_reason).has_value();
+    return MakePlan(tx, height, params, reject_reason, max_released).has_value();
 }
 
 bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reject_reason)

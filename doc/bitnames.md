@@ -82,7 +82,14 @@ server for the `.x` domain.
   names under it, at any depth (from the rules of the second audit). Releasing a name releases
   them all in one transaction: the bound keeps the work of checking it (in the mempool, for each
   replacement, after every block, and in the block) small, and a tree of that size costs whoever
-  builds it 1000 transactions.
+  builds it 1000 transactions. The mempool (policy, not consensus) takes no transaction that releases
+  more than 1001 names in all (a name and the most it may have under it; subnames swept from under a
+  name registered again, and a squat a subname replaces with what is under it, count too): it checks
+  name transactions again after every block, under the chain's lock, and stops counting there, so
+  that a transaction waiting in it costs that much at most however its trees grow. A block may
+  release more: each name is released once and was made by a transaction of its own, so a block's
+  work is bounded by what was paid for. A larger tree (made on the test network before the bounds)
+  is released by its holders releasing parts of it first, or by whoever makes a block.
 - **ICANN names.** An authority set per network can mark names as ICANN domain names. None is set
   on the test network. The authority marks a *hash*: whoever registered `example.com` first, by
   text or by its hash, holds the name it marks. The authority has to check who holds a name before

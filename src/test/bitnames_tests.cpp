@@ -60,9 +60,9 @@ public:
         undo.parts.push_back(m_store->TakeUndo());
         return ok;
     }
-    bool CheckTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reason) const
+    bool CheckTx(const CTransaction& tx, int height, const Consensus::BitNamesParams& params, std::string& reason, std::optional<uint32_t> max_released = std::nullopt) const
     {
-        return View().CheckTx(tx, height, params, reason);
+        return View().CheckTx(tx, height, params, reason, max_released);
     }
     void Revert(const TUndo& undo)
     {
@@ -960,6 +960,26 @@ BOOST_AUTO_TEST_CASE(subname_bounds)
     BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({top}, 2, 0, RegisterSubname{"over", {}}, 1)}, 6, params, reason), reason);
     state.Revert(released);
     BOOST_CHECK(state.Names().at(core) == before_release);
+
+    // The mempool takes the release of a whole tree as large as allowed (policy: MAX_RELAYED_RELEASE),
+    // and no larger: the walk stops once there are more.
+    const CTransaction release_all{Tx({top}, 0, 0, Release{}, 9)};
+    BOOST_CHECK_MESSAGE(state.CheckTx(release_all, 6, params, reason, MAX_RELAYED_RELEASE), reason);
+    BOOST_CHECK(!state.CheckTx(release_all, 6, params, reason, MAX_RELAYED_RELEASE - 1));
+    BOOST_CHECK_EQUAL(reason, "bn-release-too-large");
+    // A tree larger than the bound (made before audit2_height): a block may release it, the mempool not.
+    params.audit2_height = 100;
+    const CMutableTransaction extra{Tx({top}, 2, 0, RegisterSubname{"extra", {}}, 11)};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{extra}, 6, params, undo, reason), reason);
+    params.audit2_height = 0;
+    const CTransaction release_larger{Tx({COutPoint{extra.GetHash(), 0}}, 0, 0, Release{}, 12)};
+    BOOST_CHECK(!state.CheckTx(release_larger, 7, params, reason, MAX_RELAYED_RELEASE));
+    BOOST_CHECK_EQUAL(reason, "bn-release-too-large");
+    BOOST_CHECK_MESSAGE(state.CheckTx(release_larger, 7, params, reason), reason);
+    TUndo all;
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(release_larger, 7, params, all, reason), reason);
+    BOOST_CHECK(!state.Names().contains(core));
+    BOOST_CHECK(!state.Names().contains(chain.back()));
 }
 
 BOOST_AUTO_TEST_CASE(names_given_to_commands)
