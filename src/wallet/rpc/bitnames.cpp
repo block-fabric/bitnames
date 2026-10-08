@@ -167,6 +167,50 @@ CTransactionRef SendBitNames(CWallet& wallet, Marker marker, const std::vector<C
     return tx;
 }
 
+/** The nonce of a reservation of this wallet for a name, if the reservation commits to that name: its commitment opens with the nonce of its key. */
+std::optional<uint256> OpenReservation(const CWallet& wallet, const OwnedToken& owned, const NameHash& hash)
+{
+    if (owned.token.kind != Token::Kind::RESERVATION || !std::holds_alternative<WitnessV0KeyHash>(owned.dest)) return std::nullopt;
+    const uint256 nonce{ReservationNonce(wallet, owned.dest, hash)};
+    if (bitnames::ReservationCommitment(hash, nonce, GetScriptForDestination(owned.dest)) == owned.token.commitment ||
+        bitnames::ReservationCommitment(hash, nonce) == owned.token.commitment) {
+        return nonce;
+    }
+    return std::nullopt;
+}
+
+/**
+ * The text of what an output of this wallet carries, as the chain knows it. The label of its address
+ * is only the wallet's note of what it was for, and anyone can send a name or a reservation to a
+ * labelled address: the label counts only if its text is that very name (for a name, the text
+ * resolves to it on the chain; for a reservation, the reservation commits to it, which needs the
+ * wallet unlocked). Else, for a top-level name, its public text.
+ */
+std::optional<std::string> VerifiedText(CWallet& wallet, const OwnedToken& owned)
+{
+    const auto label{LabelOf(wallet, owned.dest)};
+    const std::optional<std::string> text{label && label->starts_with("bitname:") ? std::optional{label->substr(8)} : std::nullopt};
+    if (owned.token.kind == Token::Kind::RESERVATION) {
+        if (!text || text->find('.') != std::string::npos || !bitnames::IsGoodNameText(*text) || wallet.IsLocked()) return std::nullopt;
+        if (OpenReservation(wallet, owned, bitnames::HashName(*text))) return text;
+        return std::nullopt;
+    }
+    const auto lookup{[&](const NameHash& h) { return wallet.chain().getBitName(h); }};
+    std::string error;
+    if (text && bitnames::ResolveNameText(*text, lookup, /*by_seq=*/{}, error) == owned.token.id) return text;
+    if (const auto record{lookup(owned.token.id)}; record && !record->parent && bitnames::IsGoodNameText(record->text) && bitnames::HashName(record->text) == owned.token.id) {
+        return record->text;
+    }
+    return std::nullopt;
+}
+
+/** The label for a new output of a name of this wallet: of its text, if known for sure. */
+std::string LabelFor(CWallet& wallet, const OwnedToken& owned)
+{
+    const auto text{VerifiedText(wallet, owned)};
+    return text ? NameLabel(*text) : std::string{};
+}
+
 /** The private key of a public key of this wallet. */
 std::optional<CKey> PrivateKey(const CWallet& wallet, const CPubKey& pubkey)
 {
@@ -199,12 +243,7 @@ CPubKey NewKey(CWallet& wallet, const std::string& label)
 std::optional<std::pair<COutPoint, uint256>> FindReservation(CWallet& wallet, const NameHash& hash)
 {
     for (const auto& owned : OwnedTokens(wallet)) {
-        if (owned.token.kind != Token::Kind::RESERVATION || !std::holds_alternative<WitnessV0KeyHash>(owned.dest)) continue;
-        const uint256 nonce{ReservationNonce(wallet, owned.dest, hash)};
-        if (bitnames::ReservationCommitment(hash, nonce, GetScriptForDestination(owned.dest)) == owned.token.commitment ||
-            bitnames::ReservationCommitment(hash, nonce) == owned.token.commitment) {
-            return std::make_pair(owned.outpoint, nonce);
-        }
+        if (const auto nonce{OpenReservation(wallet, owned, hash)}) return std::make_pair(owned.outpoint, *nonce);
     }
     return std::nullopt;
 }
@@ -356,8 +395,7 @@ RPCMethod updatename()
     const bitnames::NameUpdates updates{bitnames::ParseUpdates(request.params[1])};
     if (updates.records.kind == bitnames::UpdateKind::SET) bitnames::CheckRecordsBesideSubnames(*updates.records.value, pwallet->chain().getBitNameSubnames(hash));
     marker.operation = bitnames::UpdateName{updates};
-    const auto label{LabelOf(*pwallet, owned->dest)};
-    const CTransactionRef tx{SendBitNames(*pwallet, marker, std::vector<CTxDestination>{NewDestination(*pwallet, label.value_or(""))}, {}, {owned->outpoint})};
+    const CTransactionRef tx{SendBitNames(*pwallet, marker, std::vector<CTxDestination>{NewDestination(*pwallet, LabelFor(*pwallet, *owned))}, {}, {owned->outpoint})};
     return tx->GetHash().GetHex();
 },
     };
@@ -406,15 +444,18 @@ RPCMethod listmynames()
 {
     return RPCMethod{
         "listmynames",
-        "The names and reservations this wallet holds, in blocks.",
+        "The names and reservations this wallet holds, in blocks. A name or reservation anyone sent to this wallet is\n"
+        "listed too: its text is shown only as the chain knows it, never from the label of the address that holds it.",
         {},
         RPCResult{RPCResult::Type::ARR, "", "",
         {
             {RPCResult::Type::OBJ, "", "",
             {
                 {RPCResult::Type::STR, "kind", "\"name\" or \"reservation\""},
-                {RPCResult::Type::STR, "name", /*optional=*/true, "The text of the name, if this wallet reserved or registered it"},
-                {RPCResult::Type::STR_HEX, "namehash", /*optional=*/true, "For a name: its hash"},
+                {RPCResult::Type::STR, "name", /*optional=*/true, "The text of the name, if known for sure: for a name, if this wallet registered or made it and its text\n"
+                    "resolves to it, or if its text is public; for a reservation, if this wallet made it for that name (shown only when\n"
+                    "the wallet is unlocked: the commitment is opened with a key of the wallet)"},
+                {RPCResult::Type::STR_HEX, "namehash", /*optional=*/true, "For a name: its hash. For a reservation: the hash of the name it is for, with \"name\""},
                 {RPCResult::Type::STR, "seq", /*optional=*/true, "For a name: its number"},
                 {RPCResult::Type::STR, "address", "The address that holds it"},
                 {RPCResult::Type::STR_HEX, "txid", "The output that carries it"},
@@ -432,10 +473,14 @@ RPCMethod listmynames()
         UniValue obj(UniValue::VOBJ);
         const bool is_name{owned.token.kind == Token::Kind::NAME};
         obj.pushKV("kind", is_name ? "name" : "reservation");
-        const auto label{LabelOf(*pwallet, owned.dest)};
-        if (label && label->starts_with("bitname:")) obj.pushKV("name", label->substr(8));
+        const auto text{VerifiedText(*pwallet, owned)};
+        if (text) obj.pushKV("name", *text);
         if (is_name) {
             obj.pushKV("namehash", owned.token.id.GetHex());
+        } else if (text) {
+            obj.pushKV("namehash", bitnames::HashName(*text).GetHex());
+        }
+        if (is_name) {
             if (const auto record{pwallet->chain().getBitName(owned.token.id)}) obj.pushKV("seq", bitnames::FormatSeq(record->seq));
         }
         obj.pushKV("address", EncodeDestination(owned.dest));
@@ -770,11 +815,11 @@ RPCMethod createsubname()
             throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The records of the name answer for %s already: remove the host %s from them first", label, label));
         }
     }
-    const auto parent_label{LabelOf(*pwallet, owned->dest)};
-    const std::string parent_text{parent_label && parent_label->starts_with("bitname:") ? parent_label->substr(8) : "0x" + parent.GetHex()};
+    // The text of the parent, as the chain knows it: the subname is labelled with its own text only then.
+    const auto parent_text{VerifiedText(*pwallet, *owned)};
     CTxDestination holder;
     if (request.params[2].isNull() || request.params[2].get_str().empty()) {
-        holder = NewDestination(*pwallet, NameLabel(label + "." + parent_text));
+        holder = NewDestination(*pwallet, parent_text ? NameLabel(label + "." + *parent_text) : std::string{});
     } else {
         holder = DecodeDestination(request.params[2].get_str());
         if (!IsValidDestination(holder)) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
@@ -785,7 +830,7 @@ RPCMethod createsubname()
     Marker marker;
     marker.operation = sub;
     // The parent goes on to a new address of this wallet, the subname after it.
-    const CTxDestination keep{NewDestination(*pwallet, parent_label.value_or(""))};
+    const CTxDestination keep{NewDestination(*pwallet, parent_text ? NameLabel(*parent_text) : std::string{})};
     const CTransactionRef tx{SendBitNames(*pwallet, marker, std::vector<CTxDestination>{keep, holder}, {}, {owned->outpoint})};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
@@ -839,8 +884,7 @@ RPCMethod setnamerecords()
     }
     Marker marker;
     marker.operation = bitnames::UpdateName{updates};
-    const auto label{LabelOf(*pwallet, owned->dest)};
-    return SendBitNames(*pwallet, marker, std::vector<CTxDestination>{NewDestination(*pwallet, label.value_or(""))}, {}, {owned->outpoint})->GetHash().GetHex();
+    return SendBitNames(*pwallet, marker, std::vector<CTxDestination>{NewDestination(*pwallet, LabelFor(*pwallet, *owned))}, {}, {owned->outpoint})->GetHash().GetHex();
 },
     };
 }

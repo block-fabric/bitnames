@@ -364,6 +364,24 @@ class BitNamesTest(SidechainTest):
         self.mine_txs()
         assert_equal(side.getname("leaving")["owner"]["address"], [n for n in other.listmynames() if n.get("name") == "leaving"][0]["address"])
 
+        self.log.info("A name sent to the address of a reservation is not taken for the name reserved")
+        side.reservename("pending")
+        self.mine_txs()
+        held = [n for n in side.listmynames() if n["kind"] == "reservation"]
+        assert_equal([(n["name"], n["namehash"]) for n in held], [("pending", hashlib.sha256(b"pending").digest()[::-1].hex())])
+        # The address is labelled with the name reserved; anyone can send a name to it.
+        junk = other.createsubname("nakamoto", "junk", held[0]["address"])
+        self.mine_txs()
+        listed = [n for n in side.listmynames() if n.get("namehash") == junk["namehash"]]
+        assert_equal(len(listed), 1)
+        assert_equal(listed[0]["address"], held[0]["address"])
+        assert "name" not in listed[0]
+        self.mine_txs()
+        side.registername("pending")
+        self.mine_txs()
+        assert_equal(self.names(side)["pending"]["kind"], "name")
+        assert_equal(self.names(side)["pending"]["namehash"], held[0]["namehash"])
+
         self.log.info("A name is given on with its keys removed")
         keys = other.getnewnamekeys()
         other.updatename("leaving", {"encryptionkey": keys["encryptionkey"], "signingkey": keys["signingkey"], "paymailfee": Decimal("0.01"), "ipv4": "192.0.2.44:80"})
@@ -387,7 +405,7 @@ class BitNamesTest(SidechainTest):
         assert_equal(side.getbestblockhash(), tip)
         assert_equal(side.getblockcount(), count)
         assert_equal(side.getname("satoshi"), state)
-        assert_equal(side.getbitnamesinfo()["names"], 7)
+        assert_equal(side.getbitnamesinfo()["names"], 9)
         self.check_in_sync()
 
         self.log.info("Releasing a name releases its subnames, whoever holds them")
@@ -397,7 +415,8 @@ class BitNamesTest(SidechainTest):
         self.mine_txs()
         assert_raises_rpc_error(-8, "No such name", side.getname, "0x" + created["namehash"])
         assert_raises_rpc_error(-8, "No such name", side.getname, "0x" + dev["namehash"])
-        assert_equal(side.getbitnamesinfo()["names"], 4)
+        assert_raises_rpc_error(-8, "No such name", side.getname, "0x" + junk["namehash"])
+        assert_equal(side.getbitnamesinfo()["names"], 5)
         self.check_in_sync()
 
         self.log.info("The names, rebuilt from the blocks, are the same (as on upgrade, when the store's format changed)")

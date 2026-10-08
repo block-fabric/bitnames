@@ -9,6 +9,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QFrame>
@@ -30,6 +31,8 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 using NodeRpc::Args;
 using NodeRpc::Item;
@@ -79,6 +82,17 @@ QLabel* Pill(const QString& text, const char* colour, QWidget* parent)
 /** A value as text: objects and arrays as JSON. */
 QString Show(const UniValue& value) { return value.isObject() || value.isArray() ? QString::fromStdString(value.write()) : Text(value); }
 QString Field(const UniValue& data, const char* key) { return data.isObject() && data.exists(key) ? Show(data[key]) : QString{}; }
+
+/**
+ * The hash of the text of a name, as the commands show it (SHA-256, in the byte order of hashes). The
+ * page knows its names by hash: the text the wallet lists is only what it could check.
+ */
+QString NameHashHex(const QString& name)
+{
+    QByteArray hash{QCryptographicHash::hash(name.toUtf8(), QCryptographicHash::Sha256)};
+    std::reverse(hash.begin(), hash.end());
+    return QString::fromLatin1(hash.toHex());
+}
 
 /** The names this page reserved and will register, per wallet: "name" or "name\tpublic". */
 QString PendingKey(const QString& wallet) { return QStringLiteral("BitNames/pending/%1").arg(wallet); }
@@ -561,9 +575,12 @@ void BitNamesPage::showGetPanel()
                 colour(RED);
                 return availability->setText(tr("%1 exists already").arg(name));
             }
+            // Whether this wallet holds the parent: by its hash, as the chain finds it.
             bool mine{false};
-            if (const auto names{call("listmynames", UniValue{UniValue::VARR}, true, true)}) {
-                for (const UniValue& n : names->getValues()) mine |= Text(n["kind"]) == QLatin1String("name") && n.exists("name") && Text(n["name"]) == parent;
+            const auto parent_info{call("getname", Args({parent.toStdString()}), false, true)};
+            const auto names{parent_info ? call("listmynames", UniValue{UniValue::VARR}, true, true) : std::nullopt};
+            if (names) {
+                for (const UniValue& n : names->getValues()) mine |= Text(n["kind"]) == QLatin1String("name") && Text(n["namehash"]) == Text((*parent_info)["namehash"]);
             }
             if (!mine) {
                 colour(RED);
@@ -615,9 +632,12 @@ void BitNamesPage::registerPending()
     for (const QString& entry : pending) {
         const QString name{entry.section(QLatin1Char('\t'), 0, 0)};
         const bool make_public{entry.endsWith(QStringLiteral("\tpublic"))};
+        // By hash: a name or reservation anyone sends to this wallet is listed too, and only the hash
+        // the wallet checked against the chain says which name it is.
+        const QString hash{NameHashHex(name)};
         bool reserved{false}, registered{false};
         for (const UniValue& n : mine->getValues()) {
-            if (!n.exists("name") || Text(n["name"]) != name) continue;
+            if (!n.exists("namehash") || Text(n["namehash"]) != hash) continue;
             if (Text(n["kind"]) == QLatin1String("reservation")) reserved = true;
             if (Text(n["kind"]) == QLatin1String("name")) registered = true;
         }
@@ -661,7 +681,8 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
     if (!info) return;
     const UniValue data{info->exists("data") ? (*info)["data"] : UniValue{UniValue::VOBJ}};
     QString shown{info->exists("name") ? Text((*info)["name"]) : QString{}};
-    if (shown.isEmpty() && editable && m_mine->currentItem()) shown = m_mine->currentItem()->data(Qt::UserRole + 2).toString();
+    // The text this wallet listed for it, if the item picked is this very name.
+    if (shown.isEmpty() && editable && m_mine->currentItem() && m_mine->currentItem()->data(Qt::UserRole).toString() == handle) shown = m_mine->currentItem()->data(Qt::UserRole + 2).toString();
     if (shown.isEmpty()) shown = QStringLiteral("#") + Text((*info)["seq"]);
 
     auto* panel{new QWidget};
