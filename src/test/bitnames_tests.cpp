@@ -1160,6 +1160,17 @@ BOOST_AUTO_TEST_CASE(subname_made_again_sweeps_its_orphans)
         TUndo u;
         BOOST_REQUIRE_MESSAGE(old.ApplyTx(CTransaction{Tx({g_coin}, 2, 0, RegisterSubname{"p", {}}, 23)}, 6, params, u, reason), reason);
         BOOST_CHECK(old.Names().contains(q));
+        // q is older than p's registration: the holder of p did not make it, and no text or DNS reaches it.
+        BOOST_CHECK(IsOrphan(old.Names().at(q), old.Names().at(p)));
+        BOOST_CHECK(ParseNameArg(UniValue{"p.g"}, old.View()) == p);
+        BOOST_CHECK_THROW(ParseNameArg(UniValue{"q.p.g"}, old.View()), UniValue);
+        BOOST_CHECK(ParseNameArg(UniValue{"0x" + q.GetHex()}, old.View()) == q);
+        BOOST_CHECK_EQUAL(Resolve(old, "q.p.g.x", dns::A).rcode, dns::NXDOMAIN);
+        BOOST_CHECK_EQUAL(Resolve(old, "p.g.x", dns::A).rcode, dns::NOERROR);
+        // Made under it now, a subname is reached.
+        BOOST_REQUIRE_MESSAGE(old.ApplyTx(CTransaction{Tx({COutPoint{Tx({g_coin}, 2, 0, RegisterSubname{"p", {}}, 23).GetHash(), 1}}, 2, 0, RegisterSubname{"r", {}}, 26)}, 7, params, u, reason), reason);
+        BOOST_CHECK(ParseNameArg(UniValue{"r.p.g"}, old.View()) == SubnameHash(p, "r"));
+        BOOST_CHECK_EQUAL(Resolve(old, "r.p.g.x", dns::A).rcode, dns::NOERROR);
     }
     params.audit_rules_height = 0;
     params.audit2_height = 0;

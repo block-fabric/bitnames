@@ -48,6 +48,14 @@ std::optional<NameHash> ResolveNameText(const std::string& text, const NameLooku
 NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const SeqLookup& by_seq = {});
 NameHash ParseNameArg(const UniValue& value, const State& state);
 /**
+ * Whether a subname was made under an earlier registration of its parent: older than the parent's
+ * registration, it was left behind by a release before releases took subnames along (before
+ * audit_rules_height; a subname made again kept them until audit2_height), and the parent's holder
+ * now did not make it. Such a subname is on the chain, and its holder can still use it by its hash,
+ * but no text names it, and DNS does not reach it.
+ */
+bool IsOrphan(const NameRecord& subname, const NameRecord& parent);
+/**
  * The full text of a name, "blog.core" for a subname, if it and its parents are public and their
  * text is of the characters names are made of (IsGoodNameText); else empty, never a part of it.
  */

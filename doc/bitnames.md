@@ -69,7 +69,9 @@ server for the `.x` domain.
   its parent's hash and its label. A top-level name registered by that hash (a squat) gives way when
   the subname is made (`createsubname` makes it over one). A subname made again after it was
   released starts with no subnames: those an earlier holder made, left under it by a release before
-  releasing took them along, are released then (second audit).
+  releasing took them along, are released then (second audit). Until then such a subname, older
+  than its parent's registration, is on the chain but not the new holder's: no text names it (its
+  holder still reaches it by its hash) and DNS does not answer for it, and its name is not shown.
 - **A subname depends on its parent, as a DNS subdomain depends on its domain.** What its holder
   can rely on: nobody else can update it, move it, release it alone or make subnames of it, and
   the holder of the parent cannot make another subname of the same label while it exists. What

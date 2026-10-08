@@ -421,6 +421,8 @@ std::string ShownText(const NameRecord& record)
 }
 } // namespace
 
+bool IsOrphan(const NameRecord& subname, const NameRecord& parent) { return subname.height < parent.height; }
+
 std::string FullText(const State& state, const NameRecord& record)
 {
     std::string text{record.parent ? record.label : ShownText(record)};
@@ -428,7 +430,7 @@ std::string FullText(const State& state, const NameRecord& record)
     NameRecord at{record};
     for (int depth{0}; at.parent && depth < 64; ++depth) {
         auto parent{state.GetName(*at.parent)};
-        if (!parent) return {};
+        if (!parent || IsOrphan(at, *parent)) return {};
         at = std::move(*parent);
         const std::string part{at.parent ? at.label : ShownText(at)};
         if (part.empty()) return {};
@@ -480,13 +482,17 @@ std::optional<NameHash> ResolveNameText(const std::string& text, const NameLooku
     if (const auto record{lookup(HashName(text))}; record && record->icann && record->icann_name == text) return HashName(text);
     // A subname: down from the last label, each step a subname of the one above (not a top-level
     // name registered by its hash).
+    // A subname older than its parent's registration is one an earlier holder made, left behind by a
+    // release before releasing took subnames along: not the new holder's.
     NameHash at{HashName(labels.back())};
-    bool found{lookup(at).has_value()};
+    std::optional<NameRecord> above{lookup(at)};
+    bool found{above.has_value()};
     for (size_t i{labels.size() - 1}; found && i-- > 0;) {
         const NameHash parent{at};
         at = SubnameHash(at, labels[i]);
-        const auto record{lookup(at)};
-        found = record && record->parent == parent && record->label == labels[i];
+        auto record{lookup(at)};
+        found = record && record->parent == parent && record->label == labels[i] && !IsOrphan(*record, *above);
+        above = std::move(record);
     }
     if (found) return at;
     // Never the name whose hash is that of the dotted text: anyone can register a name by any hash,

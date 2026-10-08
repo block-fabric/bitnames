@@ -364,7 +364,8 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
             return answer;
         }
         // Only a subname of this very name: a top-level name registered by the hash of a subname is none.
-        if (subname && subname->parent == current && subname->label == label) {
+        // Nor one left from an earlier registration of it (IsOrphan).
+        if (subname && subname->parent == current && subname->label == label && !IsOrphan(*subname, *record)) {
             current = sub;
             record = subname;
             node = RootNode(*subname);
