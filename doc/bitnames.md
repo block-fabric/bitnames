@@ -22,6 +22,21 @@ server for the `.x` domain.
   ahead of the one they saw. A reservation made after seeing a name revealed is never deep enough
   before that registration is in a block, unless whoever makes the blocks keeps it out of
   `reveal_depth` blocks in a row.
+- **What the rule does not stop: a block producer who censors.** A registration shows the name and
+  its nonce to everyone from the moment it is sent. Whoever makes every block for the next
+  `reveal_depth` blocks (on this sidechain: wins the blind merged mining bid for each of them) can
+  leave it out of all of them, reserve the name under a nonce of their own in the first, and
+  register it in the block after the last, ahead of the registration they saw: the name is
+  theirs. Nothing on the chain can tell censorship from a full or slow block. The defence is that
+  someone else makes one of those blocks: with more than one producer bidding, keeping a
+  registration out of `reveal_depth` blocks in a row costs the winning bid of each and fails as
+  soon as another producer wins one. A registration not in a block within `reveal_depth` blocks
+  of being sent is one to look at.
+  `reveal_depth` is 6 on the main network: an hour of mainchain blocks in a row. It is kept there.
+  A larger value raises the cost of the attack only in proportion (one more block to win per
+  step) and makes every registration wait as much longer, while a producer that wins every block
+  anyway can censor for any number of blocks; and it is a rule of the chain, which every node has
+  to apply the same. What raises the cost is producers that compete, not a deeper window.
 - **Copies of a reservation.** A reservation's commitment is public once it is in the mempool, so
   anyone can make another with the same commitment, in the same block even (whoever makes the block,
   or pays a higher fee). The commitment binds the script of the reservation's output (kept with the
@@ -44,7 +59,9 @@ server for the `.x` domain.
   (upper case, a look-alike letter of another script such as Cyrillic `а`, a space) rather than
   look up the name of its hash, which anyone could have registered.
 - **Dotted names are subnames, never hashes.** `pay.shop` in a command is the subname `pay` of
-  `shop`, if there is one, and an error if not. The name whose hash is SHA-256 of `pay.shop` (which
+  `shop`, if there is one, and an error if not; an ICANN name of that very text (`example.com`,
+  marked by the authority) goes first, so that the holder of `com` cannot stand for it with a
+  subname. The name whose hash is SHA-256 of `pay.shop` (which
   anyone can register by its hash) is reachable only as `0x` and its hash.
 - **Names are permanent.** They do not expire. Their owner can give them away
   (`transfername`) or release them (`releasename`): a released name leaves the registry with its
