@@ -382,6 +382,18 @@ class BitNamesTest(SidechainTest):
         assert_equal(self.names(side)["pending"]["kind"], "name")
         assert_equal(self.names(side)["pending"]["namehash"], held[0]["namehash"])
 
+        self.log.info("Of copies of a reservation to the wallet's own script, the oldest deep enough is revealed")
+        first = side.reservename("twice")
+        self.mine_txs()
+        address = [n for n in side.listmynames() if n.get("name") == "twice"][0]["address"]
+        other.sendrawtransaction(self.send_marker(other, self.marker_of(side, first["txid"]), address=address))
+        self.mine_txs()
+        assert_equal(len([n for n in side.listmynames() if n.get("name") == "twice"]), 2)
+        # The first is deep enough, the copy (a block younger) not yet.
+        side.registername("twice")
+        self.mine_txs()
+        assert_equal(sorted(n["kind"] for n in side.listmynames() if n.get("name") == "twice"), ["name", "reservation"])
+
         self.log.info("A name is given on with its keys removed")
         keys = other.getnewnamekeys()
         other.updatename("leaving", {"encryptionkey": keys["encryptionkey"], "signingkey": keys["signingkey"], "paymailfee": Decimal("0.01"), "ipv4": "192.0.2.44:80"})
@@ -405,7 +417,7 @@ class BitNamesTest(SidechainTest):
         assert_equal(side.getbestblockhash(), tip)
         assert_equal(side.getblockcount(), count)
         assert_equal(side.getname("satoshi"), state)
-        assert_equal(side.getbitnamesinfo()["names"], 9)
+        assert_equal(side.getbitnamesinfo()["names"], 10)
         self.check_in_sync()
 
         self.log.info("Releasing a name releases its subnames, whoever holds them")
@@ -416,7 +428,7 @@ class BitNamesTest(SidechainTest):
         assert_raises_rpc_error(-8, "No such name", side.getname, "0x" + created["namehash"])
         assert_raises_rpc_error(-8, "No such name", side.getname, "0x" + dev["namehash"])
         assert_raises_rpc_error(-8, "No such name", side.getname, "0x" + junk["namehash"])
-        assert_equal(side.getbitnamesinfo()["names"], 5)
+        assert_equal(side.getbitnamesinfo()["names"], 6)
         self.check_in_sync()
 
         self.log.info("The names, rebuilt from the blocks, are the same (as on upgrade, when the store's format changed)")

@@ -24,6 +24,8 @@
 
 #include <univalue.h>
 
+#include <limits>
+
 namespace wallet {
 namespace {
 
@@ -237,15 +239,29 @@ CPubKey NewKey(CWallet& wallet, const std::string& label)
 }
 
 /**
- * The reservation of this wallet for a name: the one whose commitment the nonce of its key opens, bound
- * to the script of its output (from audit2_height) or, made before, to the name alone.
+ * The reservation of this wallet for a name: one whose commitment the nonce of its key opens, bound
+ * to the script of its output (from audit2_height) or, made before, to the name alone. Anyone can
+ * make a copy of a reservation to the wallet's own script, which the wallet then holds too: of
+ * several, the oldest deep enough to be revealed now (see reveal_depth), else the oldest.
  */
 std::optional<std::pair<COutPoint, uint256>> FindReservation(CWallet& wallet, const NameHash& hash)
 {
+    const auto [params, next_height]{wallet.chain().getBitNamesParams()};
+    std::optional<std::pair<COutPoint, uint256>> best;
+    std::optional<int> best_height;
+    bool best_deep{false};
     for (const auto& owned : OwnedTokens(wallet)) {
-        if (const auto nonce{OpenReservation(wallet, owned, hash)}) return std::make_pair(owned.outpoint, *nonce);
+        const auto nonce{OpenReservation(wallet, owned, hash)};
+        if (!nonce) continue;
+        const int height{wallet.chain().getBitNamesReservationHeight(Txid::FromUint256(owned.token.id)).value_or(std::numeric_limits<int>::max())};
+        const bool deep{next_height < params.audit2_height || next_height - height >= params.reveal_depth};
+        if (!best || (deep && !best_deep) || (deep == best_deep && height < *best_height)) {
+            best = std::make_pair(owned.outpoint, *nonce);
+            best_height = height;
+            best_deep = deep;
+        }
     }
-    return std::nullopt;
+    return best;
 }
 
 /** The current data of a registered name. */
