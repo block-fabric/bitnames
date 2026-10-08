@@ -847,9 +847,15 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
             const QString address{give_to->text().trimmed()};
             if (address.isEmpty()) return;
             m_busy = true;
-            const bool yes{QMessageBox::question(this, tr("Give %1").arg(shown), tr("Give %1 to %2? Only the new holder can give it back.").arg(shown, address)) == QMessageBox::Yes};
+            QMessageBox ask{QMessageBox::Question, tr("Give %1").arg(shown), tr("Give %1 to %2? Only the new holder can give it back.").arg(shown, address), QMessageBox::Yes | QMessageBox::No, this};
+            // Its keys are this wallet's: messages to the name would still come here.
+            auto* clear{new QCheckBox(tr("Also remove its encryption key, signing key and paymail fee (they are this wallet's)"), &ask)};
+            clear->setChecked(true);
+            ask.setCheckBox(clear);
+            const bool yes{ask.exec() == QMessageBox::Yes};
+            const bool clear_keys{clear->isChecked()};
             m_busy = false;
-            if (yes && call("transfername", Args({handle.toStdString(), address.toStdString()}), true)) say(tr("%1 goes to %2 after the next block.").arg(shown, address));
+            if (yes && call("transfername", Args({handle.toStdString(), address.toStdString(), clear_keys}), true)) say(tr("%1 goes to %2 after the next block.").arg(shown, address));
         });
         connect(release, &QPushButton::clicked, this, [this, handle, shown] {
             m_busy = true;

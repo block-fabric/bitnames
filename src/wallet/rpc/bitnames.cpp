@@ -371,9 +371,11 @@ RPCMethod transfername()
         {
             {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, or the hash of the name"},
             {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address of the new owner"},
+            {"clearkeys", RPCArg::Type::BOOL, RPCArg::Default{false}, "Delete the encryption key, the signing key and the paymail fee of the name in the same transaction: they are\n"
+                "keys of this wallet, so messages to the name would still come here, and this wallet could still sign as it"},
         },
         RPCResult{RPCResult::Type::STR_HEX, "", "The transaction"},
-        RPCExamples{HelpExampleCli("transfername", "\"satoshi\" \"address\"")},
+        RPCExamples{HelpExampleCli("transfername", "\"satoshi\" \"address\"") + HelpExampleCli("transfername", "\"satoshi\" \"address\" true")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
     const auto pwallet{ReadyWallet(request)};
@@ -383,7 +385,17 @@ RPCMethod transfername()
     if (!IsValidDestination(dest)) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
     const auto owned{OwnedName(*pwallet, hash)};
     if (!owned) NotHeld(*pwallet, hash);
-    const CTransactionRef tx{SendBitNames(*pwallet, Marker{}, std::vector<CTxDestination>{dest}, {}, {owned->outpoint})};
+    Marker marker;
+    if (!request.params[2].isNull() && request.params[2].get_bool()) {
+        // An update of the name, given on in the same transaction (the name updated is the one spent).
+        const bitnames::NameData data{CurrentData(*pwallet, hash)};
+        bitnames::NameUpdates updates;
+        if (data.encryption_key) updates.encryption_key.kind = bitnames::UpdateKind::DELETE;
+        if (data.signing_key) updates.signing_key.kind = bitnames::UpdateKind::DELETE;
+        if (data.paymail_fee) updates.paymail_fee.kind = bitnames::UpdateKind::DELETE;
+        if (!(updates == bitnames::NameUpdates{})) marker.operation = bitnames::UpdateName{updates};
+    }
+    const CTransactionRef tx{SendBitNames(*pwallet, marker, std::vector<CTxDestination>{dest}, {}, {owned->outpoint})};
     return tx->GetHash().GetHex();
 },
     };
@@ -742,7 +754,12 @@ RPCMethod createsubname()
     const std::string label{request.params[1].get_str()};
     if (!bitnames::IsDnsLabel(label)) throw JSONRPCError(RPC_INVALID_PARAMETER, "A label is 1 to 63 lower-case letters, digits and hyphens, not at either end");
     const NameHash child{bitnames::SubnameHash(parent, label)};
-    if (pwallet->chain().getBitName(child)) throw JSONRPCError(RPC_INVALID_PARAMETER, "The subname exists");
+    if (const auto taken{pwallet->chain().getBitName(child)}) {
+        // A top-level name with the hash of the subname is a squat, which gives way to it (from
+        // audit_rules_height); a subname is taken.
+        const auto [params, next_height]{pwallet->chain().getBitNamesParams()};
+        if (taken->parent || next_height < params.audit_rules_height) throw JSONRPCError(RPC_INVALID_PARAMETER, "The subname exists");
+    }
     const auto owned{OwnedName(*pwallet, parent)};
     if (!owned) NotHeld(*pwallet, parent);
     // The records of the parent that answer for the label would be left behind the subname, never seen.

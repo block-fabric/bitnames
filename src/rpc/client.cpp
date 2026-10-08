@@ -68,6 +68,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "listnames", 1, "skip" },
     { "registername", 2, "public" },
     { "releasename", 1, "confirm" },
+    { "transfername", 2, "clearkeys" },
     { "setnamerecords", 1, "rows" },
     { "createsubname", 3, "data" },
     { "createsubname", 3, "paymailfee" },

@@ -442,6 +442,12 @@ CoinsResult AvailableCoins(const CWallet& wallet,
         if (output.nValue < params.min_amount || output.nValue > params.max_amount)
             continue;
 
+        // An output that carries a name or a reservation (of no value, listed by the BitNames marker of
+        // its transaction) is no coin to pay with: only the commands of the names spend it, and carry
+        // it on. Spent by a payment, as sendall would, the transaction is refused.
+        if (output.nValue == 0 && bitnames::TokenOutputs(*wtx.GetTx()).contains(outpoint.n))
+            continue;
+
         // Skip manually selected coins (the caller can fetch them directly)
         if (coinControl && coinControl->HasSelected() && coinControl->IsSelected(outpoint))
             continue;
