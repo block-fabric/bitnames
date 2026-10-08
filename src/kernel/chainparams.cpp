@@ -347,14 +347,14 @@ public:
         consensus.sidechain.bundle_retry_delay = 20;
         // Releasing a name released only it until then; see BitNamesParams. The same height as the second
         // audit's rules (set together at deploy): the first audit's rules never come after the second's.
-        consensus.sidechain.bitnames.audit_rules_height = 4526;
+        consensus.sidechain.bitnames.audit_rules_height = 2934; // audits 2 and 3 on the test network, 300 blocks after the deploy
         consensus.sidechain.bitnames.reveal_depth = 3;
-        consensus.sidechain.bitnames.audit2_height = 4526; // audit 2 rules on the test network: moved out while the third audit's fixes are made
+        consensus.sidechain.bitnames.audit2_height = 2934; // audits 2 and 3 on the test network, 300 blocks after the deploy
         // The test network ran without it until then; see SidechainParams.
         consensus.sidechain.single_bundle_height = 3400;
         // The height of the mainchain block that activated the slot; nothing is left out at 0.
         consensus.sidechain.main_activation_height = 2162;
-        consensus.sidechain.audit2_height = 4526; // audit 2 rules on the test network: moved out while the third audit's fixes are made
+        consensus.sidechain.audit2_height = 2934; // audits 2 and 3 on the test network, 300 blocks after the deploy
         // A tenth of the testnet mainchain's withdrawal_min_score (300); proposals within an hour.
         consensus.sidechain.pending_min_score = 30;
         consensus.sidechain.unproposed_expiry_blocks = 60;
