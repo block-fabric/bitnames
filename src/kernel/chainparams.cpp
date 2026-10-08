@@ -345,12 +345,12 @@ public:
         // Releasing a name released only it until then; see BitNamesParams.
         consensus.sidechain.bitnames.audit_rules_height = 3400;
         consensus.sidechain.bitnames.reveal_depth = 3;
-        consensus.sidechain.bitnames.audit2_height = 2816; // audit 2 rules on the test network, 300 blocks after the deploy
+        consensus.sidechain.bitnames.audit2_height = 4526; // audit 2 rules on the test network: moved out while the third audit's fixes are made
         // The test network ran without it until then; see SidechainParams.
         consensus.sidechain.single_bundle_height = 3400;
         // The height of the mainchain block that activated the slot; nothing is left out at 0.
         consensus.sidechain.main_activation_height = 2162;
-        consensus.sidechain.audit2_height = 2816; // audit 2 rules on the test network, 300 blocks after the deploy
+        consensus.sidechain.audit2_height = 4526; // audit 2 rules on the test network: moved out while the third audit's fixes are made
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
