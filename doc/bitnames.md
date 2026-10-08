@@ -10,9 +10,10 @@ server for the `.x` domain.
 ## Names
 
 - **Taking a name** takes two steps, so that nobody can see it coming and take it first. A
-  *reservation* commits to the name without showing it (HMAC-SHA256 of the name's hash, under a
-  nonce only the wallet can make); once it is deep enough in the chain, the *registration* reveals
-  the nonce and creates the name. The window ("Names", in the sidebar) does both steps.
+  *reservation* commits to the name without showing it (HMAC-SHA256, under a nonce only the wallet
+  can make, of the name's hash and the script of the output that carries the reservation); once it
+  is deep enough in the chain, the *registration* reveals the nonce and creates the name. The window
+  ("Names", in the sidebar) does both steps.
 - **A reservation is revealed only once it is deep enough** (`reveal_depth` blocks: 6 on the main
   network, 3 on the test network and signet, 2 on regtest; `getbitnamesinfo` shows it): a
   registration in block *h* of a reservation made in block *r* needs *h - r* ≥ `reveal_depth`.
@@ -22,18 +23,26 @@ server for the `.x` domain.
   before that registration is in a block, unless whoever makes the blocks keeps it out of
   `reveal_depth` blocks in a row.
 - **Copies of a reservation.** A reservation's commitment is public once it is in the mempool, so
-  anyone can make another with the same commitment. Only a copy from an *earlier* block than the
-  reservation revealed stops it; a copy in the same block (put ahead of it by whoever made the
-  block) does not. Before the rules of the second audit, the older of the two in the order of the
-  chain stopped the other, which let whoever made a block stop any registration of a commitment it
-  saw in the mempool.
+  anyone can make another with the same commitment, in the same block even (whoever makes the block,
+  or pays a higher fee). The commitment binds the script of the reservation's output (kept with the
+  reservation, table `0x2d`), and a registration opens it with that script: a copy carried by
+  anyone else's output opens nothing, and one carried by an output of the maker's script is the
+  maker's to spend. So copies neither stop a registration nor take the name. These are the rules of
+  the second audit (`audit2_height`); before them a reservation committed to the name alone, and
+  the oldest reservation of a commitment revealed it (which let whoever made a block stop a
+  registration with a copy put ahead of it, or, once a same-block copy no longer stopped it, take
+  the name through the copy). A reservation made before those rules and revealed after them is
+  stopped by any other of its commitment from the same block or an earlier one; a commitment to the
+  name alone made after them opens nothing.
 - **A name is known on the chain by the SHA-256 hash of its text.** A registration may also make
   the text *public*, so that the name can be listed and searched for, as Namecoin names are.
 - **The text of a name.** The wallet takes names of lower-case letters, digits, `-` and `_`, as DNS
   looks names up in lower case (`Core.x` is `core.x`). The chain knows hashes only, so a name of
   any other text can be registered by its hash; the commands then refer to it by its hash
   (`0x...`) or number, never by text, and its text, even if published, is not shown. Commands
-  that take a name refuse text with upper-case letters rather than look up another name.
+  that take a name (node and wallet alike, and `delegate` in DNS records) refuse any other text
+  (upper case, a look-alike letter of another script such as Cyrillic `а`, a space) rather than
+  look up the name of its hash, which anyone could have registered.
 - **Dotted names are subnames, never hashes.** `pay.shop` in a command is the subname `pay` of
   `shop`, if there is one, and an error if not. The name whose hash is SHA-256 of `pay.shop` (which
   anyone can register by its hash) is reachable only as `0x` and its hash.
@@ -42,16 +51,23 @@ server for the `.x` domain.
   data, and anyone can register it again. A reservation that is not needed can be released too
   (`releasereservation`).
 - **Numbers.** Each name gets a number in the order of registration, shown as BitNames shows it,
-  `1739-0029` for the first.
+  `1739-0029` for the first. Commands take a number with `#` in front, `#1739-0029`: without it,
+  `1739-0029` is a text like any other, which anyone can register as a name.
 - **Data.** Every field is optional: a 32-byte commitment to data kept elsewhere, an IPv4 and an
   IPv6 address with port, a key messages to the owner are encrypted to, a key the owner signs
   with, the paymail fee, and DNS records. Every value is kept with the transaction and height that
   set it: `getname <name> <height>` gives the data of a name at any height, `getnamehistory` all
-  its values.
+  its values, its records included.
+- **Giving a name on.** `transfername <name> <address> true` also deletes, in the same transaction,
+  the encryption key, the signing key and the paymail fee of the name: they are keys of the wallet
+  that gives it, which would still receive the name's messages and sign as it. The window asks.
 - **Subnames.** The owner of `core` can make `blog.core` and give it to any address
   (`createsubname core blog <address>`). A subname is a name of its own: its holder sets its data
   and records, gives it on, and makes subnames of it. On the chain a subname is known by SHA-256 of
-  its parent's hash and its label.
+  its parent's hash and its label. A top-level name registered by that hash (a squat) gives way when
+  the subname is made (`createsubname` makes it over one). A subname made again after it was
+  released starts with no subnames: those an earlier holder made, left under it by a release before
+  releasing took them along, are released then (second audit).
 - **A subname depends on its parent, as a DNS subdomain depends on its domain.** What its holder
   can rely on: nobody else can update it, move it, release it alone or make subnames of it, and
   the holder of the parent cannot make another subname of the same label while it exists. What
@@ -111,7 +127,12 @@ domains:
 | `tls` | `[[usage, selector, matching type, "hex"], ...]` | TLSA |
 | `ns` | a list of host names | NS |
 | `map` | `{"label": {...}, "*": {...}, "": {...}}` | subdomains; `*` matches any label, `""` adds to the node itself |
-| `delegate` | the text of another name (or `0x` and its hash) | the records of that name stand for this node |
+| `delegate` | another name: its text, a subname (`blog.core`), or `0x` and its hash | the records of that name stand for this node |
+
+A `delegate` with dots is a subname, found down from its last label as commands find it, never the
+top-level name of the hash of that text (anyone can register that one); `setnamerecords` refuses a
+`DELEGATE` that is not a name, a subname or a hash, and DNS answers SERVFAIL for one that names
+nothing.
 
 A host name ending with a dot is absolute (`example.com.`); otherwise it is under the name
 (`mail` in the records of `core` is `mail.core.x`); `@` is the name itself. Without an `ip` or
@@ -125,10 +146,13 @@ answers.
 
 Start the node with `-dnsbind=127.0.0.1:5335` (or `dnsbind=127.0.0.1:5335` in `bitnames.conf`);
 it answers DNS questions for `.x` over UDP (TTL 60 seconds), and refuses the others. Answers too
-large for a UDP datagram of 512 bytes are sent empty with the TC bit set. Each source address gets
-at most 20 answers a second (with bursts of 40), and the server at most 1000 a second in all;
-questions beyond that get no answer, so that the server cannot be used to flood a forged source
-address. Bind it to a local address unless it is meant to serve others. Then send the
+large for a UDP datagram of 512 bytes are sent empty with the TC bit set. Each source (an IPv4
+address, or an IPv6 /64) gets at most 20 answers a second (with bursts of 40), and the server at
+most 200 a second in all (bursts of 400); questions beyond that get no answer, so that the server
+cannot be used to flood a forged source address. Of 10000 sources remembered, those whose bucket is
+full again are forgotten when a new one comes, at most once a second. A question has at most 16
+labels, and an answer reads at most 48 names of the chain (labels, delegations and the subnames
+they name), under the chain's lock; beyond that it is SERVFAIL. Bind it to a local address unless it is meant to serve others. Then send the
 `.x` questions of the computer to it:
 
 - **Linux, systemd-resolved:** `resolvectl dns lo 127.0.0.1:5335` and `resolvectl domain lo ~x`
@@ -155,3 +179,14 @@ Wallet: `reservename`, `registername`, `updatename`, `transfername`, `createsubn
   not undo the block); transactions without inputs that could be replayed; ICANN marking, which
   could not work (its key was all zeros, its undo always failed).
 - Added: DNS records, subnames, public names, release, the DNS server, paymail sending.
+
+## Wallet
+
+`sendall` and coin selection leave the outputs that carry names and reservations alone: they have
+no value, only the commands of the names spend them, and a payment that spent one would be refused.
+
+## Activation heights
+
+The rules of the first audit (`audit_rules_height`) and of the second (`audit2_height`) are set per
+network; on the main network, signet and regtest both are 0. On the test network they are the same
+height, set at deploy, so that the first audit's rules never come after the second's.

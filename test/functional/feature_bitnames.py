@@ -5,6 +5,8 @@
 """Test the names: reservation, registration, data and its history, transfer, undo."""
 
 from decimal import Decimal
+import hashlib
+import hmac
 import socket
 import struct
 
@@ -13,6 +15,32 @@ from test_framework.util import assert_equal, assert_raises_rpc_error, p2p_port
 
 # How deep a reservation has to be to be revealed, on regtest.
 REVEAL_DEPTH = 2
+
+
+def ser_string(text):
+    data = text.encode()
+    assert len(data) < 253
+    return bytes([len(data)]) + data
+
+
+def subname_hash(parent_hex, label):
+    """SubnameHash: of its parent (the hash as the RPCs show it) and its label, in its byte order."""
+    return hashlib.sha256(ser_string("BitNames subname") + bytes.fromhex(parent_hex)[::-1] + ser_string(label)).digest()
+
+
+def bound_commitment(name, nonce, script_hex):
+    """ReservationCommitment(name, nonce, script), as from audit2_height."""
+    return hmac.new(nonce, name + bytes.fromhex(script_hex), hashlib.sha256).digest()
+
+
+def reserve_marker(commitment):
+    # BNAM, version 0, Reserve: the commitment; no name outputs; reservation output 0; no memos.
+    return b"BNAM\x00\x01" + commitment + b"\x00" + b"\x01" + struct.pack("<I", 0) + b"\x00"
+
+
+def register_marker(name, nonce):
+    # BNAM, version 0, Register: the name, the nonce, no data; name output 0; no reservation outputs; no memos.
+    return b"BNAM\x00\x02" + name + nonce + b"\x00" * 6 + b"\x01" + struct.pack("<I", 0) + b"\x00" + b"\x00"
 
 
 class BitNamesTest(SidechainTest):
@@ -59,6 +87,17 @@ class BitNamesTest(SidechainTest):
     def names(self, node):
         return {n.get("name", n.get("namehash")): n for n in node.listmynames()}
 
+    def marker_of(self, node, txid):
+        """The data of the BitNames marker of a transaction of the node's wallet."""
+        decoded = node.decoderawtransaction(node.gettransaction(txid)["hex"])
+        return [o for o in decoded["vout"] if o["scriptPubKey"]["type"] == "nulldata"][0]["scriptPubKey"]["asm"].split()[1]
+
+    def send_marker(self, node, data, inputs=None, address=None):
+        """A transaction of the node: its output 0 (no value) to `address`, the marker, then the change."""
+        raw = node.createrawtransaction(inputs or [], [{address or node.getnewaddress(): 0}, {"data": data}])
+        funded = node.fundrawtransaction(raw, {"changePosition": 2})["hex"]
+        return node.signrawtransactionwithwallet(funded)["hex"]
+
     def run_sidechain_test(self):
         main = self.main
         side, other = self.nodes
@@ -98,7 +137,10 @@ class BitNamesTest(SidechainTest):
         assert_equal(info["seq"], "1739-0029")
         assert_equal(info["data"], {"ipv4": "203.0.113.7:443", "paymailfee": Decimal("0.001")})
         assert_equal(info["owner"]["address"], self.names(side)["satoshi"]["address"])
-        assert_equal(side.getname("1739-0029")["namehash"], info["namehash"])
+        # A number has a form of its own: without "#" it is a text like any other, which anyone can register.
+        assert_equal(side.getname("#1739-0029")["namehash"], info["namehash"])
+        assert_raises_rpc_error(-8, "No such name", side.getname, "1739-0029")
+        assert_raises_rpc_error(-8, "No name has the number", side.getname, "#1739-0129")
         assert_equal(side.getname("0x" + info["namehash"])["seq"], "1739-0029")
         assert_equal(side.getbitnamesinfo()["names"], 1)
         self.check_in_sync()
@@ -114,6 +156,21 @@ class BitNamesTest(SidechainTest):
         other.registername("nakamoto")
         self.mine_txs()
         assert_equal(other.getname("nakamoto")["seq"], "1739-0129")
+        # The wallet reads numbers as the node does.
+        assert_raises_rpc_error(-8, "does not hold this name", side.updatename, "#1739-0129", {"ipv4": None})
+
+        self.log.info("A copy of a reservation, in the same block, reveals nothing")
+        prize = side.reservename("prize")
+        copy = other.sendrawtransaction(self.send_marker(other, self.marker_of(side, prize["txid"])))
+        block = self.mine_txs()
+        assert prize["txid"] in [tx["txid"] for tx in block["tx"]] and copy in [tx["txid"] for tx in block["tx"]]
+        self.mine_txs()
+        revealed = side.registername("prize")
+        # The copier reads the name and the nonce in the registration, and spends its copy with them.
+        steal = self.send_marker(other, self.marker_of(side, revealed["txid"]), inputs=[{"txid": copy, "vout": 0}])
+        assert_raises_rpc_error(-26, "bad-bn-no-reservation", other.sendrawtransaction, steal)
+        self.mine_txs()
+        assert_equal(side.getname("prize")["owner"]["address"], self.names(side)["prize"]["address"])
 
         self.log.info("The data of a name changes, and its history is kept")
         side.updatename("satoshi", {"ipv4": None, "ipv6": "[2001:db8::7]:8333", "commitment": "11" * 32})
@@ -124,6 +181,7 @@ class BitNamesTest(SidechainTest):
         history = side.getnamehistory("satoshi")
         assert_equal([e["value"] for e in history["ipv4"]], ["203.0.113.7:443", None])
         assert_equal(len(history["paymailfee"]), 1)
+        assert_equal(history["records"], [{"value": None, "txid": history["ipv4"][0]["txid"], "height": registered_height}])
         assert_raises_rpc_error(-8, "does not hold this name", other.updatename, "satoshi", {"ipv4": "198.51.100.1:80"})
 
         self.log.info("A name is given to someone else")
@@ -180,6 +238,7 @@ class BitNamesTest(SidechainTest):
         other.updatename("nakamoto", {"ipv4": "192.0.2.1:80"})
         self.mine_txs()
         assert_equal(side.getname("satoshi")["data"]["records"], records)
+        assert_equal(side.getnamehistory("satoshi")["records"][-1]["value"], records)
         assert_equal(side.resolvename("satoshi.x", "A"), {"status": "NOERROR", "records": [{"name": "satoshi.x", "type": "A", "data": "203.0.113.7"}]})
         assert_equal(side.resolvename("www.satoshi.x", "A")["records"][0]["data"], "satoshi.x.")
         assert_equal(side.resolvename("shop.satoshi.x", "A")["records"][0]["data"], "192.0.2.1")
@@ -207,6 +266,12 @@ class BitNamesTest(SidechainTest):
         assert_equal(side.resolvename("blog.nakamoto.x", "A")["records"][0]["data"], "198.51.100.78")
         assert_raises_rpc_error(-8, "does not hold this name", other.updatename, "blog.nakamoto", {"ipv4": None})
         assert_raises_rpc_error(-8, "The subname exists", other.createsubname, "nakamoto", "blog")
+        # A delegate with dots names the subname, not a top-level name of the hash of that text.
+        delegating = dict(records, map=dict(records["map"], blog={"delegate": "blog.nakamoto"}))
+        other.updatename("satoshi", {"records": delegating})
+        self.mine_txs()
+        assert_equal(side.resolvename("blog.satoshi.x", "A")["records"][0]["data"], "198.51.100.78")
+        assert_raises_rpc_error(-8, "DELEGATE: a name", other.setnamerecords, "satoshi", [{"host": "shop", "type": "DELEGATE", "value": "Nakamoto Shop"}])
 
         self.log.info("A host a subname holds is not in the parent's records")
         assert_raises_rpc_error(-8, "belong to the subname blog", other.setnamerecords, "nakamoto", [{"host": "blog", "type": "A", "value": "192.0.2.9"}])
@@ -230,6 +295,27 @@ class BitNamesTest(SidechainTest):
         assert_raises_rpc_error(-8, "lower case", side.getname, "Nakamoto")
         assert_raises_rpc_error(-8, "lower case", side.reservename, "Satoshi2")
         assert_raises_rpc_error(-8, "letters, digits", side.reservename, "<b>bold</b>")
+        # A look-alike of another script is no name: only its hash would be.
+        assert_raises_rpc_error(-8, "lower-case letters (a-z)", side.getname, "\u0455atoshi")
+        assert_raises_rpc_error(-8, "lower-case letters (a-z)", side.sendpaymail, "n\u0430kamoto", Decimal("0.02"), "hello")
+
+        self.log.info("A subname is made over a top-level name of its hash (a squat)")
+        squat = subname_hash(side.getname("satoshi")["namehash"], "sq")
+        nonce = bytes(range(32))
+        squat_address = side.getnewaddress()
+        squat_script = side.getaddressinfo(squat_address)["scriptPubKey"]
+        reservation = side.sendrawtransaction(self.send_marker(side, reserve_marker(bound_commitment(squat, nonce, squat_script)).hex(), address=squat_address))
+        self.mine_txs()
+        self.mine_txs()
+        side.sendrawtransaction(self.send_marker(side, register_marker(squat, nonce).hex(), inputs=[{"txid": reservation, "vout": 0}]))
+        self.mine_txs()
+        assert "parent" not in side.getname("0x" + squat[::-1].hex())
+        made = other.createsubname("satoshi", "sq", "", {"ipv4": "198.51.100.90:80"})
+        assert_equal(made["namehash"], squat[::-1].hex())
+        self.mine_txs()
+        assert_equal(side.getname("sq.satoshi")["label"], "sq")
+        assert_equal(side.resolvename("sq.satoshi.x", "A")["records"][0]["data"], "198.51.100.90")
+        assert_raises_rpc_error(-8, "The subname exists", other.createsubname, "satoshi", "sq")
 
         self.log.info("Standard DNS records, as rows")
         rows = [
@@ -278,6 +364,17 @@ class BitNamesTest(SidechainTest):
         self.mine_txs()
         assert_equal(side.getname("leaving")["owner"]["address"], [n for n in other.listmynames() if n.get("name") == "leaving"][0]["address"])
 
+        self.log.info("A name is given on with its keys removed")
+        keys = other.getnewnamekeys()
+        other.updatename("leaving", {"encryptionkey": keys["encryptionkey"], "signingkey": keys["signingkey"], "paymailfee": Decimal("0.01"), "ipv4": "192.0.2.44:80"})
+        self.mine_txs()
+        receiver = side.getnewaddress()
+        other.transfername("leaving", receiver, True)
+        self.mine_txs()
+        leaving = side.getname("leaving")
+        assert_equal(leaving["owner"]["address"], receiver)
+        assert_equal(leaving["data"], {"ipv4": "192.0.2.44:80"})
+
         self.log.info("Undoing blocks undoes the names")
         tip = side.getbestblockhash()
         state = side.getname("satoshi")
@@ -290,7 +387,7 @@ class BitNamesTest(SidechainTest):
         assert_equal(side.getbestblockhash(), tip)
         assert_equal(side.getblockcount(), count)
         assert_equal(side.getname("satoshi"), state)
-        assert_equal(side.getbitnamesinfo()["names"], 5)
+        assert_equal(side.getbitnamesinfo()["names"], 7)
         self.check_in_sync()
 
         self.log.info("Releasing a name releases its subnames, whoever holds them")
@@ -300,7 +397,7 @@ class BitNamesTest(SidechainTest):
         self.mine_txs()
         assert_raises_rpc_error(-8, "No such name", side.getname, "0x" + created["namehash"])
         assert_raises_rpc_error(-8, "No such name", side.getname, "0x" + dev["namehash"])
-        assert_equal(side.getbitnamesinfo()["names"], 2)
+        assert_equal(side.getbitnamesinfo()["names"], 4)
         self.check_in_sync()
 
         self.log.info("The names, rebuilt from the blocks, are the same (as on upgrade, when the store's format changed)")
@@ -312,6 +409,14 @@ class BitNamesTest(SidechainTest):
         assert_equal(side.listnames(), names)
         assert_equal(side.getnamehistory("satoshi"), history)
         assert_equal(side.getname("satoshi", registered_height)["data"], {"ipv4": "203.0.113.7:443", "paymailfee": Decimal("0.001")})
+
+        self.log.info("sendall leaves the outputs of names alone")
+        self.connect_nodes(0, 1)
+        held = sorted(n["txid"] + str(n["vout"]) for n in side.listmynames())
+        assert held
+        side.sendall([other.getnewaddress()])
+        self.mine_txs()
+        assert_equal(sorted(n["txid"] + str(n["vout"]) for n in side.listmynames()), held)
 
 
 if __name__ == "__main__":
