@@ -33,6 +33,13 @@ using bitnames::Marker;
 using bitnames::NameHash;
 using bitnames::Token;
 
+/**
+ * How many blocks either side of audit2_height (when it is not 0) the wallet makes no reservation: the
+ * form of the commitment changes there, and a reservation mined on the other side of it from the block
+ * it was made for could never be revealed.
+ */
+constexpr int AUDIT2_RESERVE_MARGIN{6};
+
 /** The label the wallet gives the outputs of a name, so that it knows the text of its names. */
 std::string NameLabel(const std::string& name) { return "bitname:" + name; }
 
@@ -299,7 +306,8 @@ RPCMethod reservename()
     return RPCMethod{
         "reservename",
         "Reserve a name: the first of two steps to take it. The reservation commits to the name without showing it,\n"
-        "so that nobody can see it coming and take it first; registername takes it once the reservation is in a block." +
+        "so that nobody can see it coming and take it first; registername takes it once the reservation is in a block.\n"
+        "Where the rules of reservations change (audit2_height, if not 0), none is made in the few blocks either side." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name"},
@@ -318,11 +326,20 @@ RPCMethod reservename()
     CheckNewName(name);
     const NameHash hash{bitnames::HashName(name)};
     if (pwallet->chain().getBitName(hash)) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is taken");
-    const CTxDestination dest{NewDestination(*pwallet, NameLabel(name))};
-    const uint256 nonce{ReservationNonce(*pwallet, dest, hash)};
     // From audit2_height, the commitment binds the reservation to the script of its output: a copy of
     // it, made by someone who saw it, can never reveal the name.
     const auto [params, next_height]{pwallet->chain().getBitNamesParams()};
+    // Which commitment to make depends on the block the reservation is mined in. Near audit2_height it
+    // may be mined on the other side of it from the block it was made for (a slow mempool before, a
+    // reorganisation after), and then nothing opens it: the name could never be registered with it.
+    if (params.audit2_height > 0 && next_height > params.audit2_height - AUDIT2_RESERVE_MARGIN && next_height < params.audit2_height + AUDIT2_RESERVE_MARGIN) {
+        throw JSONRPCError(RPC_MISC_ERROR, strprintf("Reservations change form at block %d: one made from block %d to %d could be mined on the other side of that block "
+                                                     "and never be revealed. Reserve the name from block %d (the next block is %d)",
+                                                     params.audit2_height, params.audit2_height - AUDIT2_RESERVE_MARGIN + 1, params.audit2_height + AUDIT2_RESERVE_MARGIN - 1,
+                                                     params.audit2_height + AUDIT2_RESERVE_MARGIN, next_height));
+    }
+    const CTxDestination dest{NewDestination(*pwallet, NameLabel(name))};
+    const uint256 nonce{ReservationNonce(*pwallet, dest, hash)};
     Marker marker;
     marker.operation = bitnames::Reserve{next_height >= params.audit2_height ? bitnames::ReservationCommitment(hash, nonce, GetScriptForDestination(dest))
                                                                              : bitnames::ReservationCommitment(hash, nonce)};
