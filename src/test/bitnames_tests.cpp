@@ -969,4 +969,60 @@ BOOST_AUTO_TEST_CASE(full_text_is_whole_or_nothing)
     }
 }
 
+BOOST_AUTO_TEST_CASE(dns_answer_count)
+{
+    // A record whose name cannot be written is left out of the answer, and out of its count: the
+    // count was written first, and the answer was malformed.
+    const std::vector<unsigned char> query{0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 4, 'c', 'o', 'r', 'e', 1, 'x', 0, 0, 1, 0, 1};
+    const auto response{DnsRespond(query, [](const std::string&, uint16_t) {
+        dns::Answer answer;
+        answer.records.push_back({std::string(70, 'a') + ".x", dns::A, {1, 2, 3, 4}, ""});
+        answer.records.push_back({"core.x", dns::A, {5, 6, 7, 8}, ""});
+        return answer;
+    })};
+    BOOST_CHECK_EQUAL(response[7], 1);
+    BOOST_CHECK_EQUAL(response.size(), query.size() + 2 + 10 + 4);
+    // Too large for UDP: TC set, no answers.
+    const auto large{DnsRespond(query, [](const std::string&, uint16_t) {
+        dns::Answer answer;
+        for (int i{0}; i < 40; ++i) answer.records.push_back({"core.x", dns::A, {5, 6, 7, 8}, ""});
+        return answer;
+    })};
+    BOOST_CHECK(large[2] & 0x02);
+    BOOST_CHECK_EQUAL(large[7], 0);
+    BOOST_CHECK_EQUAL(large.size(), query.size());
+}
+
+BOOST_AUTO_TEST_CASE(dns_rate_limit)
+{
+    DnsRateLimiter::Limits limits;
+    limits.source_rate = 10;
+    limits.source_burst = 20;
+    limits.total_rate = 100;
+    limits.total_burst = 50;
+    limits.max_sources = 3;
+    DnsRateLimiter limiter{limits};
+    const auto t0{DnsRateLimiter::Clock::now()};
+    int allowed{0};
+    for (int i{0}; i < 100; ++i) allowed += limiter.Allow("a", t0);
+    BOOST_CHECK_EQUAL(allowed, 20);
+    // Another source has its own bucket; all of them share one.
+    allowed = 0;
+    for (int i{0}; i < 100; ++i) allowed += limiter.Allow("b", t0);
+    BOOST_CHECK_EQUAL(allowed, 20);
+    allowed = 0;
+    for (int i{0}; i < 100; ++i) allowed += limiter.Allow("c", t0);
+    BOOST_CHECK_EQUAL(allowed, 10);
+    // A source refills at its rate.
+    const auto t1{t0 + std::chrono::milliseconds{500}};
+    allowed = 0;
+    for (int i{0}; i < 100; ++i) allowed += limiter.Allow("a", t1);
+    BOOST_CHECK_EQUAL(allowed, 5);
+    // Beyond max_sources, new ones wait until one is full again (forgotten).
+    BOOST_CHECK(!limiter.Allow("d", t1));
+    const auto t2{t0 + std::chrono::seconds{10}};
+    BOOST_CHECK(limiter.Allow("d", t2));
+    BOOST_CHECK_EQUAL(limiter.Sources(), 1U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

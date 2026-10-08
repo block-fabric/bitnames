@@ -390,27 +390,34 @@ std::vector<unsigned char> DnsRespond(const std::vector<unsigned char>& query, c
     const uint16_t qdcount{static_cast<uint16_t>(query[4] << 8 | query[5])};
 
     const auto reply{[&](Rcode rcode, size_t question_end, const std::vector<Record>& records, const std::string& qname) {
-        std::vector<unsigned char> out{query[0], query[1]};
-        PutU16(out, 0x8000 | (opcode << 11) | 0x0400 | (flags & 0x0100) | rcode);
-        PutU16(out, question_end > 12 ? 1 : 0);
-        PutU16(out, records.size());
-        PutU16(out, 0);
-        PutU16(out, 0);
-        out.insert(out.end(), query.begin() + 12, query.begin() + question_end);
+        // The answers first: a record whose name cannot be written is left out, and the count is of
+        // those written.
+        std::vector<unsigned char> answers;
+        uint16_t count{0};
         for (const Record& record : records) {
+            if (count == 0xffff) break;
             if (record.name == qname) {
-                PutU16(out, 0xc00c); // the name of the question
+                PutU16(answers, 0xc00c); // the name of the question
             } else {
                 const auto encoded{EncodeName(record.name)};
                 if (!encoded) continue;
-                out.insert(out.end(), encoded->begin(), encoded->end());
+                answers.insert(answers.end(), encoded->begin(), encoded->end());
             }
-            PutU16(out, record.type);
-            PutU16(out, 1); // IN
-            PutU32(out, DNS_TTL);
-            PutU16(out, record.rdata.size());
-            out.insert(out.end(), record.rdata.begin(), record.rdata.end());
+            PutU16(answers, record.type);
+            PutU16(answers, 1); // IN
+            PutU32(answers, DNS_TTL);
+            PutU16(answers, record.rdata.size());
+            answers.insert(answers.end(), record.rdata.begin(), record.rdata.end());
+            ++count;
         }
+        std::vector<unsigned char> out{query[0], query[1]};
+        PutU16(out, 0x8000 | (opcode << 11) | 0x0400 | (flags & 0x0100) | rcode);
+        PutU16(out, question_end > 12 ? 1 : 0);
+        PutU16(out, count);
+        PutU16(out, 0);
+        PutU16(out, 0);
+        out.insert(out.end(), query.begin() + 12, query.begin() + question_end);
+        out.insert(out.end(), answers.begin(), answers.end());
         // Too large for UDP without EDNS: say so, and leave the answers out.
         if (out.size() > 512) {
             out.resize(question_end);
@@ -442,6 +449,39 @@ std::vector<unsigned char> DnsRespond(const std::vector<unsigned char>& query, c
     if (qclass != 1 && qclass != 255) return reply(REFUSED, question_end, {}, qname);
     const Answer answer{resolve(qname, qtype)};
     return reply(answer.rcode, question_end, answer.records, ToLower(qname));
+}
+
+void DnsRateLimiter::Refill(Bucket& bucket, double rate, double burst, Clock::time_point now)
+{
+    const double elapsed{std::chrono::duration<double>(now - bucket.last).count()};
+    if (elapsed > 0) bucket.tokens = std::min(burst, bucket.tokens + elapsed * rate);
+    bucket.last = now;
+}
+
+bool DnsRateLimiter::Allow(const std::string& source, Clock::time_point now)
+{
+    if (!m_started) {
+        m_total = {m_limits.total_burst, now};
+        m_started = true;
+    }
+    auto it{m_sources.find(source)};
+    if (it == m_sources.end()) {
+        if (m_sources.size() >= m_limits.max_sources) {
+            // Forget the sources whose bucket is full again: they are as if never seen.
+            std::erase_if(m_sources, [&](auto& entry) {
+                Refill(entry.second, m_limits.source_rate, m_limits.source_burst, now);
+                return entry.second.tokens >= m_limits.source_burst;
+            });
+            if (m_sources.size() >= m_limits.max_sources) return false;
+        }
+        it = m_sources.emplace(source, Bucket{m_limits.source_burst, now}).first;
+    }
+    Refill(it->second, m_limits.source_rate, m_limits.source_burst, now);
+    Refill(m_total, m_limits.total_rate, m_limits.total_burst, now);
+    if (it->second.tokens < 1 || m_total.tokens < 1) return false;
+    it->second.tokens -= 1;
+    m_total.tokens -= 1;
+    return true;
 }
 
 namespace {
@@ -499,6 +539,8 @@ private:
             // Nothing a question or a record holds may stop the node: whatever goes wrong is a
             // failure of this answer only.
             try {
+                // The lock is held for one answer: a few reads of records of bounded size (the
+                // history of a name is kept apart from it), at most one per label and delegation.
                 LOCK(::cs_main);
                 return Resolve(chainman.ActiveChainstate().SideState().BitNames(), qname, qtype);
             } catch (const std::exception& e) {
@@ -513,6 +555,9 @@ private:
             socklen_t from_length{sizeof(from)};
             const auto received{::recvfrom(m_socket, reinterpret_cast<char*>(buffer.data()), buffer.size(), 0, reinterpret_cast<sockaddr*>(&from), &from_length)};
             if (received <= 0) continue;
+            CService source;
+            if (!source.SetSockAddr(reinterpret_cast<const sockaddr*>(&from), from_length)) continue;
+            if (!m_limiter.Allow(source.ToStringAddr(), DnsRateLimiter::Clock::now())) continue;
             const std::vector<unsigned char> query(buffer.begin(), buffer.begin() + received);
             const std::vector<unsigned char> response{DnsRespond(query, resolve)};
             if (response.empty()) continue;
@@ -531,6 +576,7 @@ private:
 
     SOCKET m_socket{INVALID_SOCKET};
     std::atomic<bool> m_stop{false};
+    DnsRateLimiter m_limiter;
     std::thread m_thread;
 };
 

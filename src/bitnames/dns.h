@@ -7,9 +7,12 @@
 
 #include <bitnames/state.h>
 
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class ArgsManager;
@@ -55,6 +58,42 @@ std::optional<uint16_t> ParseType(const std::string& name);
  * `qtype`, from the state of the names. A name outside `.x` is refused.
  */
 dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype);
+
+/**
+ * How many questions the DNS server answers: a token bucket per source address, and one for all
+ * of them. Over UDP the source can be forged, and an answer is larger than its question: without a
+ * limit the server would send a flood to whoever a forger names, and hold the chain's lock for each.
+ */
+class DnsRateLimiter
+{
+public:
+    using Clock = std::chrono::steady_clock;
+    struct Limits {
+        double source_rate{20};
+        double source_burst{40};
+        double total_rate{1000};
+        double total_burst{2000};
+        //! Sources remembered at most; beyond that, those whose bucket is full again are forgotten.
+        size_t max_sources{10000};
+    };
+    DnsRateLimiter() : DnsRateLimiter(Limits{}) {}
+    explicit DnsRateLimiter(const Limits& limits) : m_limits{limits}, m_total{limits.total_burst, {}} {}
+    /** Whether a question from `source` at `now` may be answered; it is counted if so. */
+    bool Allow(const std::string& source, Clock::time_point now);
+    size_t Sources() const { return m_sources.size(); }
+
+private:
+    struct Bucket {
+        double tokens{0};
+        Clock::time_point last{};
+    };
+    static void Refill(Bucket& bucket, double rate, double burst, Clock::time_point now);
+
+    Limits m_limits;
+    Bucket m_total;
+    bool m_started{false};
+    std::unordered_map<std::string, Bucket> m_sources;
+};
 
 /** A DNS response to the query `query` (a UDP datagram); empty if it is not worth answering. */
 std::vector<unsigned char> DnsRespond(const std::vector<unsigned char>& query, const std::function<dns::Answer(const std::string&, uint16_t)>& resolve);
