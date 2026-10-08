@@ -322,7 +322,14 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
         }
     }
     if (m_bitnames_txs.erase(it->GetTx().GetHash()) > 0) {
-        std::erase_if(m_bitnames_registrations, [&](const auto& entry) { return entry.second == it->GetTx().GetHash(); });
+        // The registration it made, if any, by its name: not a scan of every registration.
+        if (const auto marker{bitnames::GetMarker(it->GetTx())}; marker && marker->operation) {
+            if (const auto* reg{std::get_if<bitnames::Register>(&*marker->operation)}) {
+                if (const auto entry{m_bitnames_registrations.find(reg->name)}; entry != m_bitnames_registrations.end() && entry->second == it->GetTx().GetHash()) {
+                    m_bitnames_registrations.erase(entry);
+                }
+            }
+        }
     }
 
     RemoveUnbroadcastTx(it->GetTx().GetHash(), true /* add logging because unchecked */);
