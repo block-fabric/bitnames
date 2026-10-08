@@ -201,6 +201,8 @@ public:
     virtual std::vector<std::string> getBitNameSubnames(const bitnames::NameHash& parent) = 0;
     //! BitNames: the height of the block that made a reservation not revealed yet (by the transaction that made it).
     virtual std::optional<int> getBitNamesReservationHeight(const Txid& id) = 0;
+    //! BitNames: the name that has a number (see bitnames::FormatSeq), if one has it.
+    virtual std::optional<bitnames::NameHash> getBitNameOfSeq(uint32_t seq) = 0;
     //! BitNames: the data of a name as it was at the end of the block at a height.
     virtual std::optional<bitnames::NameData> getBitNameDataAtHeight(const bitnames::NameHash& name, int height) = 0;
     //! BitNames: the parameters of the names, and the height of the next block.

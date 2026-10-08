@@ -216,10 +216,10 @@ bitnames::NameData CurrentData(CWallet& wallet, const NameHash& name)
     return record->Current();
 }
 
-/** A name given to a command of the wallet: by text (a subname by its dotted text), hash, or number. */
+/** A name given to a command of the wallet: by text (a subname by its dotted text), hash, or number (#1739-0029), as the node's commands read it. */
 NameHash ParseName(CWallet& wallet, const UniValue& value)
 {
-    return bitnames::ParseNameArg(value, [&](const NameHash& h) { return wallet.chain().getBitName(h); });
+    return bitnames::ParseNameArg(value, [&](const NameHash& h) { return wallet.chain().getBitName(h); }, [&](uint32_t seq) { return wallet.chain().getBitNameOfSeq(seq); });
 }
 
 /** The text of a name this wallet reserves or registers: what DNS can look up, and what is shown as it is. */

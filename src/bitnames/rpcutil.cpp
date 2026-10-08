@@ -442,27 +442,38 @@ NameHash ParseNameArg(const UniValue& value, const State& state)
     return ParseNameArg(value, [&](const NameHash& h) { return state.GetName(h); }, [&](uint32_t seq) { return state.NameOfSeq(seq); });
 }
 
-NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const std::function<std::optional<NameHash>(uint32_t)>& by_seq)
+std::optional<NameHash> ResolveNameText(const std::string& text, const NameLookup& lookup, const SeqLookup& by_seq, std::string& error)
 {
-    const std::string text{value.get_str()};
-    if (text.empty()) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is empty");
+    const auto fail{[&](std::string why) -> std::optional<NameHash> {
+        error = std::move(why);
+        return std::nullopt;
+    }};
+    if (text.empty()) return fail("The name is empty");
     if (text.size() == 66 && text.starts_with("0x")) {
         if (const auto hash{uint256::FromHex(text.substr(2))}) return *hash;
     }
-    if (by_seq) {
-        if (const auto seq{ParseSeq(text)}) {
-            if (const auto name{by_seq(*seq)}) return *name;
-        }
+    // A number has a form of its own: "1739-0029" is a name like any other text.
+    if (text.starts_with('#')) {
+        const auto seq{ParseSeq(text.substr(1))};
+        if (!seq) return fail(strprintf("A number of a name is # and two groups of four digits, such as #1739-0029: %s is none", text));
+        if (!by_seq) return fail("Names are not given by number here");
+        if (const auto name{by_seq(*seq)}) return *name;
+        return fail(strprintf("No name has the number %s", text));
     }
     // DNS looks names up in lower case: Core.x is core.x. Another name, of the hash of "Core", is
     // not what is meant.
     if (std::any_of(text.begin(), text.end(), [](char c) { return c >= 'A' && c <= 'Z'; })) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Names are lower case, as DNS looks them up: %s. A name registered by the hash of another text is given by its hash (\"0x\" and 64 hex digits)", ToLower(text)));
+        return fail(strprintf("Names are lower case, as DNS looks them up: %s. A name registered by the hash of another text is given by its hash (\"0x\" and 64 hex digits)", ToLower(text)));
     }
-    if (text.find('.') == std::string::npos) return HashName(text);
+    // Only the characters names are made of: anything else (a look-alike letter of another script,
+    // a space) is the hash of a text that only looks like the name meant, which anyone can register.
+    const std::vector<std::string> labels{util::SplitString(text, '.')};
+    if (!std::all_of(labels.begin(), labels.end(), IsGoodNameText)) {
+        return fail(strprintf("A name is lower-case letters (a-z), digits, - and _, its labels separated by dots: %s is not. A name registered by the hash of another text is given by its hash (\"0x\" and 64 hex digits)", text));
+    }
+    if (labels.size() == 1) return HashName(text);
     // A subname: down from the last label, each step a subname of the one above (not a top-level
     // name registered by its hash).
-    std::vector<std::string> labels{util::SplitString(text, '.')};
     NameHash at{HashName(labels.back())};
     bool found{lookup(at).has_value()};
     for (size_t i{labels.size() - 1}; found && i-- > 0;) {
@@ -476,7 +487,15 @@ NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const std
     if (const auto record{lookup(HashName(text))}; record && record->icann && record->icann_name == text) return HashName(text);
     // Never the name whose hash is that of the dotted text: anyone can register a name by any hash,
     // and what is sent to "pay.shop" would go to it.
-    throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("No such subname: %s (a name with dots is a subname, found from its last label down; a name registered by the hash of a text with dots is given by its hash)", text));
+    return fail(strprintf("No such subname: %s (a name with dots is a subname, found from its last label down; a name registered by the hash of a text with dots is given by its hash)", text));
+}
+
+NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const SeqLookup& by_seq)
+{
+    std::string error;
+    const auto name{ResolveNameText(value.get_str(), lookup, by_seq, error)};
+    if (!name) throw JSONRPCError(RPC_INVALID_PARAMETER, error);
+    return *name;
 }
 
 } // namespace bitnames

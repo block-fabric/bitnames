@@ -752,6 +752,11 @@ public:
         LOCK(::cs_main);
         return chainman().ActiveChainstate().SideState().BitNames().ReservationHeight(id);
     }
+    std::optional<bitnames::NameHash> getBitNameOfSeq(uint32_t seq) override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().SideState().BitNames().NameOfSeq(seq);
+    }
     std::optional<bitnames::NameData> getBitNameDataAtHeight(const bitnames::NameHash& name, int height) override
     {
         LOCK(::cs_main);

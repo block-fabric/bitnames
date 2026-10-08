@@ -30,14 +30,21 @@ UniValue DataToJSON(const NameData& data);
 /** How a name is looked up by its hash. */
 using NameLookup = std::function<std::optional<NameRecord>(const NameHash&)>;
 
+/** How a name is looked up by its number. */
+using SeqLookup = std::function<std::optional<NameHash>(uint32_t)>;
+
 /**
- * A name given by its text, the hex of its hash ("0x" + 64 digits), or its number ("1739-0029",
- * where `by_seq` is given). Text with dots is a subname ("blog.core"), found from its last label
- * down, each step a subname of the one above, or an ICANN name of that text; anything else with
- * dots is an error, never the name of the hash of that text (anyone can register one). Text with
- * upper-case letters is an error: DNS looks names up in lower case.
+ * A name given by its text, the hex of its hash ("0x" + 64 digits), or its number ("#1739-0029",
+ * where `by_seq` is given: "1739-0029" is a text like any other). Text is of the characters names
+ * are made of (IsGoodNameText), in labels separated by dots: anything else (upper case, a look-alike
+ * of another script) is an error, never the name of the hash of that text, which anyone can register.
+ * Text with dots is a subname ("blog.core"), found from its last label down, each step a subname of
+ * the one above, or an ICANN name of that text. The node's commands, the wallet's and DNS delegations
+ * all read names this way. Nullopt, with why in `error`, if the text names nothing.
  */
-NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const std::function<std::optional<NameHash>(uint32_t)>& by_seq = {});
+std::optional<NameHash> ResolveNameText(const std::string& text, const NameLookup& lookup, const SeqLookup& by_seq, std::string& error);
+/** ResolveNameText, for a command: an error is thrown. */
+NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const SeqLookup& by_seq = {});
 NameHash ParseNameArg(const UniValue& value, const State& state);
 /**
  * The full text of a name, "blog.core" for a subname, if it and its parents are public and their

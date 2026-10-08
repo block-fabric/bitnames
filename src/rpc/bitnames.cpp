@@ -68,7 +68,7 @@ std::vector<RPCResult> NameResults()
         {RPCResult::Type::STR, "name", /*optional=*/true, "The text of the name (blog.core for a subname), if it and its parents are public, and of lower-case letters, digits, - and _"},
         {RPCResult::Type::STR_HEX, "parent", /*optional=*/true, "For a subname: the hash of its parent"},
         {RPCResult::Type::STR, "label", /*optional=*/true, "For a subname: its label"},
-        {RPCResult::Type::STR, "seq", "Its number, in the order of registration"},
+        {RPCResult::Type::STR, "seq", "Its number, in the order of registration (given to commands with # in front: #1739-0029)"},
         {RPCResult::Type::NUM, "registered", "The height of the block that registered it"},
         {RPCResult::Type::STR_HEX, "registration", "The transaction that registered it"},
         {RPCResult::Type::STR, "icann", /*optional=*/true, "The ICANN domain name it was marked as"},
@@ -88,11 +88,11 @@ RPCMethod getname()
         "getname",
         "A registered name: its data, now or at a past height, and its owner.",
         {
-            {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, the hash of the name (\"0x\" and 64 hex digits), or its number (\"1739-0029\")"},
+            {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, the hash of the name (\"0x\" and 64 hex digits), or its number (\"#1739-0029\")"},
             {"height", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "The height to give the data at; now if left out"},
         },
         RPCResult{RPCResult::Type::OBJ, "", "", NameResults()},
-        RPCExamples{HelpExampleCli("getname", "\"satoshi\"") + HelpExampleCli("getname", "\"1739-0029\" 1200")},
+        RPCExamples{HelpExampleCli("getname", "\"satoshi\"") + HelpExampleCli("getname", "\"#1739-0029\" 1200")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
     ChainstateManager& chainman{EnsureAnyChainman(request.context)};
@@ -151,7 +151,7 @@ RPCMethod getnamehistory()
         "getnamehistory",
         "Every value each field of the data of a name has had, with the transaction and height that set it.",
         {
-            {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, the hash of the name, or its number"},
+            {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name, the hash of the name, or its number (\"#1739-0029\")"},
         },
         RPCResult{RPCResult::Type::OBJ_DYN, "", "Per field, oldest first",
         {

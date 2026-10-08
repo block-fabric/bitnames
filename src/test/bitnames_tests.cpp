@@ -1146,4 +1146,29 @@ BOOST_AUTO_TEST_CASE(subname_made_again_sweeps_its_orphans)
     BOOST_CHECK(state == before);
 }
 
+BOOST_AUTO_TEST_CASE(names_given_by_text_number_or_hash)
+{
+    // Text is of the characters names are made of: a look-alike of another script is no name, but an
+    // error (it would be the hash of a text anyone can register). A number has a form of its own,
+    // #1739-0029: 1739-0029 is a text like any other, which anyone can register.
+    Consensus::BitNamesParams params;
+    TState state;
+    Registered(state, "shop", {}, 10, params);
+    const State view{state.View()};
+    const uint32_t seq{state.Names().at(HashName("shop")).seq};
+    BOOST_CHECK(ParseNameArg(UniValue{"#" + FormatSeq(seq)}, view) == HashName("shop"));
+    BOOST_CHECK(ParseNameArg(UniValue{FormatSeq(seq)}, view) == HashName(FormatSeq(seq)));
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"#" + FormatSeq(seq + 5)}, view), UniValue);
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"#1234"}, view), UniValue);
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"\xd1\x95hop"}, view), UniValue); // a Cyrillic letter
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"sh op"}, view), UniValue);
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"a..shop"}, view), UniValue);
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"shop."}, view), UniValue);
+    BOOST_CHECK(ParseNameArg(UniValue{"0x" + HashName("\xd1\x95hop").GetHex()}, view) == HashName("\xd1\x95hop"));
+    // Without numbers (a lookup only), a number is an error, not a text.
+    const auto lookup{[&](const NameHash& h) { return view.GetName(h); }};
+    BOOST_CHECK_THROW(ParseNameArg(UniValue{"#" + FormatSeq(seq)}, lookup), UniValue);
+    BOOST_CHECK(ParseNameArg(UniValue{"#" + FormatSeq(seq)}, lookup, [&](uint32_t n) { return view.NameOfSeq(n); }) == HashName("shop"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
