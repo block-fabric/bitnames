@@ -344,7 +344,7 @@ public:
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
         consensus.sidechain.bitnames.reveal_depth = 3;
-        consensus.sidechain.main_activation_height = 0; // set after the slot activates on the restarted test network
+        consensus.sidechain.main_activation_height = 804; // the block that activated the slot on the restarted test network
         // A tenth of the testnet mainchain's withdrawal_min_score (300); proposals within an hour.
         consensus.sidechain.pending_min_score = 30;
         consensus.sidechain.unproposed_expiry_blocks = 60;
