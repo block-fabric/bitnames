@@ -340,15 +340,14 @@ public:
         };
 
         // This chain is a sidechain of the Chains testnet.
-        MakeSidechain({.slot = 3, .genesis_message = "BitNames testnet", .genesis_time = 1791216000,
+        MakeSidechain({.slot = 3, .genesis_message = "BitNames testnet", .genesis_time = 1791513199,
                        .message_start = {0x62, 0x6e, 0x6d, 0x02}, .default_port = 19955, .bech32_hrp = "tbn"});
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
         consensus.sidechain.bitnames.reveal_depth = 3;
         // The test network ran without it until then; see SidechainParams.
         consensus.sidechain.single_bundle_height = 3400;
-        // The height of the mainchain block that activated the slot; nothing is left out at 0.
-        consensus.sidechain.main_activation_height = 2162;
+        consensus.sidechain.main_activation_height = 0; // set after the slot activates on the restarted test network
         consensus.sidechain.audit2_height = 2873; // audits 2-4 on the test network, a few blocks after the deploy
         // A tenth of the testnet mainchain's withdrawal_min_score (300); proposals within an hour.
         consensus.sidechain.pending_min_score = 30;
