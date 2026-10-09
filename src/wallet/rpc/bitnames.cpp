@@ -33,13 +33,6 @@ using bitnames::Marker;
 using bitnames::NameHash;
 using bitnames::Token;
 
-/**
- * How many blocks either side of audit2_height (when it is not 0) the wallet makes no reservation: the
- * form of the commitment changes there, and a reservation mined on the other side of it from the block
- * it was made for could never be revealed.
- */
-constexpr int AUDIT2_RESERVE_MARGIN{6};
-
 /** The label the wallet gives the outputs of a name, so that it knows the text of its names. */
 std::string NameLabel(const std::string& name) { return "bitname:" + name; }
 
@@ -181,10 +174,7 @@ std::optional<uint256> OpenReservation(const CWallet& wallet, const OwnedToken& 
 {
     if (owned.token.kind != Token::Kind::RESERVATION || !std::holds_alternative<WitnessV0KeyHash>(owned.dest)) return std::nullopt;
     const uint256 nonce{ReservationNonce(wallet, owned.dest, hash)};
-    if (bitnames::ReservationCommitment(hash, nonce, GetScriptForDestination(owned.dest)) == owned.token.commitment ||
-        bitnames::ReservationCommitment(hash, nonce) == owned.token.commitment) {
-        return nonce;
-    }
+    if (bitnames::ReservationCommitment(hash, nonce, GetScriptForDestination(owned.dest)) == owned.token.commitment) return nonce;
     return std::nullopt;
 }
 
@@ -247,7 +237,7 @@ CPubKey NewKey(CWallet& wallet, const std::string& label)
 
 /**
  * The reservation of this wallet for a name: one whose commitment the nonce of its key opens, bound
- * to the script of its output (from audit2_height) or, made before, to the name alone. Anyone can
+ * to the script of its output. Anyone can
  * make a copy of a reservation to the wallet's own script, which the wallet then holds too: of
  * several, the oldest deep enough to be revealed now (see reveal_depth), else the oldest.
  */
@@ -261,7 +251,7 @@ std::optional<std::pair<COutPoint, uint256>> FindReservation(CWallet& wallet, co
         const auto nonce{OpenReservation(wallet, owned, hash)};
         if (!nonce) continue;
         const int height{wallet.chain().getBitNamesReservationHeight(Txid::FromUint256(owned.token.id)).value_or(std::numeric_limits<int>::max())};
-        const bool deep{next_height < params.audit2_height || next_height - height >= params.reveal_depth};
+        const bool deep{next_height - height >= params.reveal_depth};
         if (!best || (deep && !best_deep) || (deep == best_deep && height < *best_height)) {
             best = std::make_pair(owned.outpoint, *nonce);
             best_height = height;
@@ -306,8 +296,7 @@ RPCMethod reservename()
     return RPCMethod{
         "reservename",
         "Reserve a name: the first of two steps to take it. The reservation commits to the name without showing it,\n"
-        "so that nobody can see it coming and take it first; registername takes it once the reservation is in a block.\n"
-        "Where the rules of reservations change (audit2_height, if not 0), none is made in the few blocks either side." +
+        "so that nobody can see it coming and take it first; registername takes it once the reservation is in a block." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name"},
@@ -326,23 +315,12 @@ RPCMethod reservename()
     CheckNewName(name);
     const NameHash hash{bitnames::HashName(name)};
     if (pwallet->chain().getBitName(hash)) throw JSONRPCError(RPC_INVALID_PARAMETER, "The name is taken");
-    // From audit2_height, the commitment binds the reservation to the script of its output: a copy of
-    // it, made by someone who saw it, can never reveal the name.
-    const auto [params, next_height]{pwallet->chain().getBitNamesParams()};
-    // Which commitment to make depends on the block the reservation is mined in. Near audit2_height it
-    // may be mined on the other side of it from the block it was made for (a slow mempool before, a
-    // reorganisation after), and then nothing opens it: the name could never be registered with it.
-    if (params.audit2_height > 0 && next_height > params.audit2_height - AUDIT2_RESERVE_MARGIN && next_height < params.audit2_height + AUDIT2_RESERVE_MARGIN) {
-        throw JSONRPCError(RPC_MISC_ERROR, strprintf("Reservations change form at block %d: one made from block %d to %d could be mined on the other side of that block "
-                                                     "and never be revealed. Reserve the name from block %d (the next block is %d)",
-                                                     params.audit2_height, params.audit2_height - AUDIT2_RESERVE_MARGIN + 1, params.audit2_height + AUDIT2_RESERVE_MARGIN - 1,
-                                                     params.audit2_height + AUDIT2_RESERVE_MARGIN, next_height));
-    }
+    // The commitment binds the reservation to the script of its output: a copy of it, made by someone
+    // who saw it, can never reveal the name.
     const CTxDestination dest{NewDestination(*pwallet, NameLabel(name))};
     const uint256 nonce{ReservationNonce(*pwallet, dest, hash)};
     Marker marker;
-    marker.operation = bitnames::Reserve{next_height >= params.audit2_height ? bitnames::ReservationCommitment(hash, nonce, GetScriptForDestination(dest))
-                                                                             : bitnames::ReservationCommitment(hash, nonce)};
+    marker.operation = bitnames::Reserve{bitnames::ReservationCommitment(hash, nonce, GetScriptForDestination(dest))};
     const CTransactionRef tx{SendBitNames(*pwallet, marker, {}, std::vector<CTxDestination>{dest}, {})};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
@@ -384,7 +362,7 @@ RPCMethod registername()
     if (const auto token{pwallet->chain().getBitNamesToken(reservation->first)}) {
         const auto [params, next_height]{pwallet->chain().getBitNamesParams()};
         const auto reserved_at{pwallet->chain().getBitNamesReservationHeight(Txid::FromUint256(token->id))};
-        if (reserved_at && next_height >= params.audit2_height && next_height - *reserved_at < params.reveal_depth) {
+        if (reserved_at && next_height - *reserved_at < params.reveal_depth) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The reservation is in block %d: it can be revealed from block %d, once it is %d blocks deep (the next block is %d)",
                                                                 *reserved_at, *reserved_at + params.reveal_depth, params.reveal_depth, next_height));
         }
@@ -836,10 +814,8 @@ RPCMethod createsubname()
     if (!bitnames::IsDnsLabel(label)) throw JSONRPCError(RPC_INVALID_PARAMETER, "A label is 1 to 63 lower-case letters, digits and hyphens, not at either end");
     const NameHash child{bitnames::SubnameHash(parent, label)};
     if (const auto taken{pwallet->chain().getBitName(child)}) {
-        // A top-level name with the hash of the subname is a squat, which gives way to it (from
-        // audit_rules_height); a subname is taken.
-        const auto [params, next_height]{pwallet->chain().getBitNamesParams()};
-        if (taken->parent || next_height < params.audit_rules_height) throw JSONRPCError(RPC_INVALID_PARAMETER, "The subname exists");
+        // A top-level name with the hash of the subname is a squat, which gives way to it; a subname is taken.
+        if (taken->parent) throw JSONRPCError(RPC_INVALID_PARAMETER, "The subname exists");
     }
     const auto owned{OwnedName(*pwallet, parent)};
     if (!owned) NotHeld(*pwallet, parent);

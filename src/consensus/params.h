@@ -92,35 +92,10 @@ struct BitNamesParams {
      */
     uint256 icann_authority;
     /**
-     * From this height, the rules of the audit of October 2026:
-     * - releasing a name releases its subnames, to any depth, whoever holds them, as a DNS domain takes
-     *   its subdomains with it: whoever registers the name next starts with none (and so does a name
-     *   registered over subnames an earlier holder left);
-     * - a top-level name registered by the hash of a subname (a squat) gives way to that subname;
-     * - a transaction carries on no name it releases, in any of these ways;
-     * - a reservation is revealed only if no older one has the same commitment: a copy of someone
-     *   else's, made to register the name first once they reveal it, never is.
+     * A registration in block h reveals a reservation made in block r only if h - r >= reveal_depth:
+     * whoever makes a block sees every registration waiting for it, and could otherwise reserve the
+     * same name under a nonce of its own and register it in its own block, ahead of the one it saw.
      */
-    int audit_rules_height{0};
-    /**
-     * From this height, the rules of the second audit of October 2026:
-     * - a reservation is revealed only once it is reveal_depth blocks deep: whoever makes a block
-     *   sees every registration waiting for it, and could otherwise reserve the same name under a
-     *   nonce of its own and register it in its own block, ahead of the one it saw;
-     * - a reservation commits to the name and to the script of the output that carries it
-     *   (bitnames::ReservationCommitment), and a registration opens it with that script: a copy of
-     *   it to anyone else's script, in the same block even, opens nothing, and neither stops nor
-     *   takes the registration. A reservation made before, committing to the name alone, is stopped
-     *   by another of its commitment from the same block or an earlier one; one made after opens
-     *   nothing;
-     * - a subname made again starts with no subnames: those left under it by a release before
-     *   audit_rules_height are released (as a top-level name registered again does);
-     * - a subname is at most bitnames::MAX_SUBNAME_DEPTH levels under its top-level name, and a
-     *   name has at most bitnames::MAX_SUBNAMES names under it, so that releasing a name (which
-     *   releases them all) is bounded work.
-     */
-    int audit2_height{0};
-    /** From audit2_height: a registration in block h reveals a reservation made in block r only if h - r >= reveal_depth. */
     int reveal_depth{1};
 };
 

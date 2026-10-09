@@ -226,7 +226,7 @@ RPCMethod getbitnamesinfo()
     result.pushKV("reservations", state.ReservationCount());
     const Consensus::BitNamesParams& params{chainman.GetConsensus().sidechain.bitnames};
     result.pushKV("icann", !params.icann_authority.IsNull());
-    result.pushKV("revealdepth", chainman.ActiveChain().Height() + 1 >= params.audit2_height ? params.reveal_depth : 1);
+    result.pushKV("revealdepth", params.reveal_depth);
     if (const auto dns{bitnames::DnsServerAddress()}) result.pushKV("dns", *dns);
     return result;
 },

@@ -40,17 +40,16 @@ uint256 ParamsFingerprint(const Consensus::DrivechainParams& params, const Conse
     if (!sidechain.enabled) return ParamsFingerprint(params);
     // Every field: a parameter added later has to be added here as well.
     // The names are part of the state of this chain as a sidechain (in its store): a change of their
-    // rules (an activation height moved, another reveal depth) derives it again as well.
-    static_assert(sizeof(Consensus::BitNamesParams) == 44, "a new names parameter goes into the fingerprint");
-    static_assert(sizeof(Consensus::SidechainParams) == 88, "a new sidechain parameter goes into the fingerprint");
+    // rules (another reveal depth, another authority) derives it again as well.
+    static_assert(sizeof(Consensus::BitNamesParams) == 36, "a new names parameter goes into the fingerprint");
+    static_assert(sizeof(Consensus::SidechainParams) == 80, "a new sidechain parameter goes into the fingerprint");
     const Consensus::BitNamesParams& names{sidechain.bitnames};
     HashWriter hasher{};
     hasher << std::string{"Sidechain parameters"} << ParamsFingerprint(params) << sidechain.slot << sidechain.min_withdrawal
            << sidechain.max_bundle_withdrawals << sidechain.bundle_retry_delay << sidechain.single_bundle_height
            << sidechain.main_activation_height << sidechain.audit2_height << sidechain.pending_min_score
            << sidechain.unproposed_expiry_blocks;
-    hasher << std::string{"BitNames parameters"} << names.icann_authority << names.audit_rules_height << names.audit2_height
-           << names.reveal_depth;
+    hasher << std::string{"BitNames parameters"} << names.icann_authority << names.reveal_depth;
     return hasher.GetHash();
 }
 

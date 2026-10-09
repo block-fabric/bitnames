@@ -32,8 +32,8 @@
  *    holds the output that carries it owns it, and moves it as coins are moved.
  *  - It is taken in two steps, so that nobody can see a name coming and take it
  *    first: a **reservation** commits to the name under a secret nonce
- *    (HMAC-SHA256 with the nonce as key, of the name hash and, from
- *    audit2_height, of the script of the reservation's output), and a later
+ *    (HMAC-SHA256 with the nonce as key, of the name hash and of the script
+ *    of the reservation's output), and a later
  *    **registration** reveals the nonce, spends the reservation and creates the
  *    name.
  *  - A name holds **data**, every field optional: a commitment to data kept
@@ -96,10 +96,10 @@ inline constexpr size_t MAX_TOKEN_OUTPUTS{64};
 inline constexpr size_t MAX_ICANN_NAMES{64};
 /** Longest ICANN domain name. */
 inline constexpr size_t MAX_ICANN_NAME_SIZE{253};
-/** From audit2_height: how many levels under its top-level name a subname is at most (blog.core is 1). */
+/** How many levels under its top-level name a subname is at most (blog.core is 1). */
 inline constexpr uint32_t MAX_SUBNAME_DEPTH{8};
 /**
- * From audit2_height: how many names, at any depth, are under one name at most. Releasing a name
+ * How many names, at any depth, are under one name at most. Releasing a name
  * releases them all, and the work of checking that (in the mempool, for each replacement, after
  * every block, and in the block) grows with them: a thousand names, each with its record, its
  * output and two index entries, is a few thousand reads of the store, and a tree that size costs
@@ -199,8 +199,7 @@ struct NameUpdates {
 
 struct Reserve {
     static constexpr uint8_t KIND{1};
-    //! ReservationCommitment(name, nonce, script of the output that carries it); before
-    //! audit2_height, ReservationCommitment(name, nonce).
+    //! ReservationCommitment(name, nonce, script of the output that carries it).
     uint256 commitment;
     SERIALIZE_METHODS(Reserve, obj) { READWRITE(obj.commitment); }
     friend bool operator==(const Reserve&, const Reserve&) = default;
@@ -250,8 +249,8 @@ struct Release {
  * A subname of the name the transaction spends last, which the transaction carries on: a name of
  * its own, known by SubnameHash(parent, label), that the transaction gives to its last name output.
  * Only the owner of a name makes subnames of it; once made, only its holder updates it, moves it or
- * makes subnames of it. It depends on its parent all the same: releasing the parent releases it
- * (from audit_rules_height), and the next holder of the parent starts with no subnames.
+ * makes subnames of it. It depends on its parent all the same: releasing the parent releases it,
+ * and the next holder of the parent starts with no subnames.
  */
 struct RegisterSubname {
     static constexpr uint8_t KIND{6};
@@ -286,10 +285,8 @@ std::optional<Marker> GetMarker(const CTransaction& tx, std::string* error = nul
 
 /** The hash of the text of a name. */
 NameHash HashName(const std::string& name);
-/** What a reservation committed to before audit2_height: HMAC-SHA256 with the nonce as key, of the name hash. */
-uint256 ReservationCommitment(const NameHash& name, const uint256& nonce);
 /**
- * What a reservation commits to from audit2_height: HMAC-SHA256 with the nonce as key, of the name
+ * What a reservation commits to: HMAC-SHA256 with the nonce as key, of the name
  * hash then the script of the output that carries the reservation when it is made. Bound to that
  * script, a copy of it made by anyone else, with an output of their own, commits to nothing they can
  * reveal; one with an output of the maker's script is the maker's to spend.
@@ -424,12 +421,11 @@ struct ReservationRecord {
  * The names, on the store of the sidechain state (sidechain/store.h), one entry per key, so that
  * nothing the size of the registry, or of the history of a name, is ever read, copied or written
  * whole. Tables (the first byte of the keys): 0x20 what outputs carry, 0x21 names as they are now,
- * 0x22 reservations not revealed yet, 0x23 names by number, 0x24 the order of reservations, 0x2c the
- * history of names (by number, field, height and place in the block, latest first), 0x2d the script
- * a reservation made from audit2_height was made with (what its commitment binds); single values
- * 0x25 the next number, 0x26 the next order, 0x2a and 0x2b how many names and reservations there
- * are. Indexes, so that no rule reads a table whole: 0x27 names by parent, 0x28 outputs by the name
- * they carry, 0x29 reservations by commitment, then height and order.
+ * 0x22 reservations not revealed yet, 0x23 names by number, 0x2c the history of names (by number,
+ * field, height and place in the block, latest first), 0x2d the script a reservation was made with
+ * (what its commitment binds); single values 0x25 the next number, 0x2a and 0x2b how many names and
+ * reservations there are. Indexes, so that no rule reads a table whole: 0x27 names by parent, 0x28
+ * outputs by the name they carry.
  *
  * What a block changes, the store's journal notes: the undo data of the block.
  */
@@ -463,7 +459,7 @@ public:
     std::optional<uint256> GetReservation(const Txid& id) const;
     /** The height of the block that made a reservation not revealed yet. */
     std::optional<int> ReservationHeight(const Txid& id) const;
-    /** The script of the output that carried a reservation when it was made, for one made from audit2_height. */
+    /** The script of the output that carried a reservation when it was made. */
     std::optional<CScript> GetReservationOrigin(const Txid& id) const;
     /** The data of a name as it was at the end of the block at `height`; nullopt before its registration. */
     std::optional<NameData> DataAtHeight(const NameRecord& record, int height) const;
@@ -496,7 +492,6 @@ private:
     std::optional<std::set<NameHash>> ReleaseDescendants(Plan& plan, const std::vector<NameHash>& roots) const;
     /** Add to a plan the names above `gone` (released or replaced names), with the names they lose counted out. */
     void CountOut(Plan& plan, const std::set<NameHash>& gone) const;
-    std::optional<uint64_t> OrderOf(const Txid& id) const;
 
     // Writes, with the indexes kept in step.
     sidechain::StoreOverlay& Writable() const;
@@ -508,7 +503,6 @@ private:
     void AddHistory(uint32_t seq, Field field, int height, const sidechain::StoreBytes& stamped);
     /** Erase the history of the name numbered `seq`. */
     void EraseHistory(uint32_t seq);
-    void SetOrder(const Txid& id, const std::optional<uint64_t>& order);
 
     const sidechain::StoreView* m_view;
     sidechain::StoreOverlay* m_overlay;

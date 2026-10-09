@@ -68,9 +68,9 @@ std::set<sidechain::StoreBytes> KeysUnder(const sidechain::StoreView& view, uint
 }
 
 /** Every index, rebuilt from the tables, is the one in the store; the counts are the tables' sizes. */
-void CheckIndexes(const sidechain::StoreView& view, bool counted, int audit2_height)
+void CheckIndexes(const sidechain::StoreView& view)
 {
-    std::set<sidechain::StoreBytes> children, name_tokens, by_commitment;
+    std::set<sidechain::StoreBytes> children, name_tokens;
     std::set<uint256> bound;
     uint64_t names{0}, reservations{0};
     sidechain::Table<uint256, NameRecord>{0x21}.ForEach(view, [&](const uint256& hash, const NameRecord& record) {
@@ -92,22 +92,16 @@ void CheckIndexes(const sidechain::StoreView& view, bool counted, int audit2_hei
         }
         return true;
     });
-    const sidechain::Table<uint256, uint64_t> order{0x24};
-    sidechain::Table<uint256, ReservationRecord>{0x22}.ForEach(view, [&](const uint256& id, const ReservationRecord& reservation) {
+    sidechain::Table<uint256, ReservationRecord>{0x22}.ForEach(view, [&](const uint256& id, const ReservationRecord&) {
         ++reservations;
-        sidechain::StoreBytes key{0x29};
-        sidechain::KeyCodec<uint256>::Encode(key, reservation.commitment);
-        sidechain::KeyCodec<uint32_t>::Encode(key, static_cast<uint32_t>(reservation.height));
-        sidechain::KeyCodec<uint64_t>::Encode(key, order.Get(view, id).value_or(0));
-        sidechain::KeyCodec<uint256>::Encode(key, id);
-        by_commitment.insert(key);
-        // The script a reservation is bound to is kept for each one made from audit2_height, and no other.
-        if (reservation.height >= audit2_height) bound.insert(id);
+        // The script a reservation is bound to is kept for each one, and no other.
+        bound.insert(id);
         return true;
     });
     assert(KeysUnder(view, 0x27) == children);
     assert(KeysUnder(view, 0x28) == name_tokens);
-    assert(KeysUnder(view, 0x29) == by_commitment);
+    // Tables of the order of reservations, no longer kept.
+    assert(KeysUnder(view, 0x24).empty() && KeysUnder(view, 0x26).empty() && KeysUnder(view, 0x29).empty());
     std::set<uint256> origins;
     sidechain::Table<uint256, CScript>{0x2d}.ForEach(view, [&](const uint256& id, const CScript&) {
         origins.insert(id);
@@ -147,24 +141,26 @@ void CheckIndexes(const sidechain::StoreView& view, bool counted, int audit2_hei
         return true;
     });
     assert(std::count_if(fields.begin(), fields.end(), [](const auto& f) { return !f.second.empty(); }) == static_cast<ptrdiff_t>(with_history));
-    // Each name counts the names under it, and knows how deep it is (unless releases before
-    // audit_rules_height left subnames behind, for the next holder of their parent).
-    if (counted) {
-        std::function<uint32_t(const NameHash&)> under{[&](const NameHash& name) {
-            uint32_t n{0};
-            for (const NameHash& child : state.ChildrenOf(name)) n += 1 + under(child);
-            return n;
-        }};
-        state.ForEachName([&](const NameHash& hash, const NameRecord& record) {
-            assert(record.descendants == under(hash));
-            if (record.parent) {
-                assert(record.depth == state.GetName(*record.parent)->depth + 1);
-            } else {
-                assert(record.depth == 0);
-            }
-            return true;
-        });
-    }
+    // Each name counts the names under it, and knows how deep it is. A subname has its parent, and
+    // was made under the parent's registration: releasing a name takes its subnames along, so none
+    // is ever left for the next holder.
+    std::function<uint32_t(const NameHash&)> under{[&](const NameHash& name) {
+        uint32_t n{0};
+        for (const NameHash& child : state.ChildrenOf(name)) n += 1 + under(child);
+        return n;
+    }};
+    state.ForEachName([&](const NameHash& hash, const NameRecord& record) {
+        assert(record.descendants == under(hash));
+        if (record.parent) {
+            const auto parent{state.GetName(*record.parent)};
+            assert(parent);
+            assert(record.depth == parent->depth + 1);
+            assert(record.height >= parent->height);
+        } else {
+            assert(record.depth == 0);
+        }
+        return true;
+    });
 }
 } // namespace
 
@@ -172,8 +168,6 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
 {
     FuzzedDataProvider fdp{buffer.data(), buffer.size()};
     Consensus::BitNamesParams params;
-    params.audit_rules_height = fdp.ConsumeIntegralInRange<int>(0, 20);
-    params.audit2_height = fdp.ConsumeIntegralInRange<int>(0, 20);
     params.reveal_depth = fdp.ConsumeIntegralInRange<int>(0, 3);
     const std::vector<std::string> texts{"a", "b", "core", "blog", "x"};
     const std::vector<std::string> labels{"www", "blog", "a"};
@@ -200,11 +194,11 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
             std::optional<Operation> op;
             switch (fdp.ConsumeIntegralInRange<int>(0, 6)) {
             case 0:
-                // Bound to the script of its output, to another one (a copy of someone else's), or to the name alone.
+                // Bound to the script of its output, to another one (a copy of someone else's), or to nothing anyone opens.
                 switch (fdp.ConsumeIntegralInRange<int>(0, 2)) {
                 case 0: op = Reserve{ReservationCommitment(HashName(text), nonce, payee)}; break;
                 case 1: op = Reserve{ReservationCommitment(HashName(text), nonce, PAYEES[fdp.ConsumeIntegralInRange<int>(0, 1)])}; break;
-                default: op = Reserve{ReservationCommitment(HashName(text), nonce)}; break;
+                default: op = Reserve{HashName(text)}; break;
                 }
                 break;
             case 1: op = Register{HashName(text), nonce, {}, fdp.ConsumeBool() ? std::optional{text} : std::nullopt}; break;
@@ -228,7 +222,7 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
         }
         const sidechain::StoreUndo undo{block.TakeUndo()};
         block.MergeInto(cache);
-        CheckIndexes(cache, params.audit_rules_height == 0, params.audit2_height);
+        CheckIndexes(cache);
         // Undone, through serialization: exactly what was before the block.
         DataStream stream{};
         stream << undo;
@@ -237,6 +231,6 @@ FUZZ_TARGET(bitnames_state, .init = initialize_bitnames)
         sidechain::StoreOverlay reverted{cache, /*journal=*/false};
         reverted.Revert(read);
         assert(sidechain::StoreHash(reverted) == before);
-        CheckIndexes(reverted, params.audit_rules_height == 0, params.audit2_height);
+        CheckIndexes(reverted);
     }
 }

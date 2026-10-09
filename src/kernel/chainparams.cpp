@@ -237,7 +237,6 @@ public:
         MakeSidechain({.slot = 3, .genesis_message = "BitNames: names that point to keys, addresses and data, owned like coins", .genesis_time = 1791216000,
                        .message_start = {0x62, 0x6e, 0x6d, 0x01}, .default_port = 9955, .bech32_hrp = "bn"});
         consensus.sidechain.bitnames.reveal_depth = 6;
-        consensus.sidechain.bitnames.audit2_height = 0;
         // Set when the slot activates on the mainchain: the height of the block that activated it.
         consensus.sidechain.main_activation_height = 0;
         consensus.sidechain.audit2_height = 0;
@@ -345,11 +344,7 @@ public:
                        .message_start = {0x62, 0x6e, 0x6d, 0x02}, .default_port = 19955, .bech32_hrp = "tbn"});
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
-        // Releasing a name released only it until then; see BitNamesParams. The same height as the second
-        // audit's rules (set together at deploy): the first audit's rules never come after the second's.
-        consensus.sidechain.bitnames.audit_rules_height = 2873; // audits 2-4 on the test network, a few blocks after the deploy
         consensus.sidechain.bitnames.reveal_depth = 3;
-        consensus.sidechain.bitnames.audit2_height = 2873; // audits 2-4 on the test network, a few blocks after the deploy
         // The test network ran without it until then; see SidechainParams.
         consensus.sidechain.single_bundle_height = 3400;
         // The height of the mainchain block that activated the slot; nothing is left out at 0.
@@ -467,7 +462,6 @@ public:
         MakeSidechain({.slot = 3, .genesis_message = "BitNames signet", .genesis_time = 1791216000,
                        .message_start = {0x62, 0x6e, 0x6d, 0x03}, .default_port = 39955, .bech32_hrp = "tbn"});
         consensus.sidechain.bitnames.reveal_depth = 3;
-        consensus.sidechain.bitnames.audit2_height = 0;
         consensus.sidechain.main_activation_height = 0;
         consensus.sidechain.audit2_height = 0;
         // The Chains signet has the rules of its main network.
@@ -574,7 +568,6 @@ public:
             consensus.drivechain.max_sidechains = 0;
             consensus.coinbase_maturity = 0;
             consensus.sidechain.bitnames.reveal_depth = 2;
-            consensus.sidechain.bitnames.audit2_height = 0;
         }
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;

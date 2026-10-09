@@ -29,7 +29,7 @@ def subname_hash(parent_hex, label):
 
 
 def bound_commitment(name, nonce, script_hex):
-    """ReservationCommitment(name, nonce, script), as from audit2_height."""
+    """ReservationCommitment(name, nonce, script)."""
     return hmac.new(nonce, name + bytes.fromhex(script_hex), hashlib.sha256).digest()
 
 

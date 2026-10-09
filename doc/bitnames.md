@@ -42,13 +42,7 @@ server for the `.x` domain.
   or pays a higher fee). The commitment binds the script of the reservation's output (kept with the
   reservation, table `0x2d`), and a registration opens it with that script: a copy carried by
   anyone else's output opens nothing, and one carried by an output of the maker's script is the
-  maker's to spend. So copies neither stop a registration nor take the name. These are the rules of
-  the second audit (`audit2_height`); before them a reservation committed to the name alone, and
-  the oldest reservation of a commitment revealed it (which let whoever made a block stop a
-  registration with a copy put ahead of it, or, once a same-block copy no longer stopped it, take
-  the name through the copy). A reservation made before those rules and revealed after them is
-  stopped by any other of its commitment from the same block or an earlier one; a commitment to the
-  name alone made after them opens nothing.
+  maker's to spend. So copies neither stop a registration nor take the name.
 - **A name is known on the chain by the SHA-256 hash of its text.** A registration may also make
   the text *public*, so that the name can be listed and searched for, as Namecoin names are.
 - **The text of a name.** The wallet takes names of lower-case letters, digits, `-` and `_`, as DNS
@@ -84,11 +78,7 @@ server for the `.x` domain.
   (`createsubname core blog <address>`). A subname is a name of its own: its holder sets its data
   and records, gives it on, and makes subnames of it. On the chain a subname is known by SHA-256 of
   its parent's hash and its label. A top-level name registered by that hash (a squat) gives way when
-  the subname is made (`createsubname` makes it over one). A subname made again after it was
-  released starts with no subnames: those an earlier holder made, left under it by a release before
-  releasing took them along, are released then (second audit). Until then such a subname, older
-  than its parent's registration, is on the chain but not the new holder's: no text names it (its
-  holder still reaches it by its hash) and DNS does not answer for it, and its name is not shown.
+  the subname is made (`createsubname` makes it over one).
 - **A subname depends on its parent, as a DNS subdomain depends on its domain.** What its holder
   can rely on: nobody else can update it, move it, release it alone or make subnames of it, and
   the holder of the parent cannot make another subname of the same label while it exists. What
@@ -212,9 +202,3 @@ Wallet: `reservename`, `registername`, `updatename`, `transfername`, `createsubn
 
 `sendall` and coin selection leave the outputs that carry names and reservations alone: they have
 no value, only the commands of the names spend them, and a payment that spent one would be refused.
-
-## Activation heights
-
-The rules of the first audit (`audit_rules_height`) and of the second (`audit2_height`) are set per
-network; on the main network, signet and regtest both are 0. On the test network they are the same
-height, set at deploy, so that the first audit's rules never come after the second's.

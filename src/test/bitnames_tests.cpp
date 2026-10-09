@@ -134,7 +134,7 @@ CMutableTransaction Tx(const std::vector<COutPoint>& inputs, size_t names, size_
     return tx;
 }
 
-/** A reservation of `name` under `nonce`, bound to the script of its output (Payee(salt)), as from audit2_height. */
+/** A reservation of `name` under `nonce`, bound to the script of its output (Payee(salt)). */
 CMutableTransaction Reservation(const NameHash& name, const uint256& nonce, uint8_t salt)
 {
     return Tx({}, 0, 1, Reserve{ReservationCommitment(name, nonce, Payee(salt))}, salt);
@@ -224,18 +224,16 @@ BOOST_AUTO_TEST_CASE(names_move_and_cannot_be_destroyed)
 BOOST_AUTO_TEST_CASE(one_registration_of_a_name_per_block)
 {
     // The original let two registrations of the same name into one block, each with a reservation
-    // of the same commitment (whoever sees the first can copy it), and then could not undo the block.
-    // (Commitments to the name alone: those of before audit2_height.)
+    // that opens with the name and nonce, and then could not undo the block. (Here: two reservations
+    // of the same maker, to two of its scripts.)
     Consensus::BitNamesParams params;
-    params.audit2_height = 100;
     TState state;
     TUndo undo;
     std::string reason;
     const NameHash name{HashName("satoshi")};
     const uint256 nonce{9};
-    const uint256 commitment{ReservationCommitment(name, nonce)};
-    const CMutableTransaction first{Tx({}, 0, 1, Reserve{commitment}, 1)};
-    const CMutableTransaction copy{Tx({}, 0, 1, Reserve{commitment}, 2)};
+    const CMutableTransaction first{Reservation(name, nonce, 1)};
+    const CMutableTransaction copy{Reservation(name, nonce, 2)};
     BOOST_REQUIRE(state.ApplyTx(CTransaction{first}, 1, params, undo, reason));
     BOOST_REQUIRE(state.ApplyTx(CTransaction{copy}, 1, params, undo, reason));
 
@@ -548,17 +546,6 @@ BOOST_AUTO_TEST_CASE(release_takes_subnames)
     const COutPoint core_now{made_blog.GetHash(), 0};
     BOOST_REQUIRE(state.Names().contains(post));
 
-    // Before the rule's height, the subnames stay (as on the test network until then).
-    params.audit_rules_height = 100;
-    {
-        TState old_rules{state};
-        TUndo undo;
-        BOOST_REQUIRE_MESSAGE(old_rules.ApplyTx(CTransaction{Tx({core_now}, 0, 0, Release{}, 40)}, 5, params, undo, reason), reason);
-        BOOST_CHECK(!old_rules.Names().contains(HashName("core")));
-        BOOST_CHECK(old_rules.Names().contains(blog));
-    }
-    params.audit_rules_height = 0;
-
     // A release cannot keep one of the names it takes: carrying on the subname (spent first) and
     // releasing the name it is under.
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({COutPoint{made_post.GetHash(), 0}, core_now}, 1, 0, Release{}, 41)}, 5, params, reason));
@@ -611,14 +598,9 @@ BOOST_AUTO_TEST_CASE(squatted_subname_gives_way)
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{squat}, 4, params, undo, reason), reason);
     BOOST_REQUIRE(state.Names().contains(www));
     BOOST_CHECK_EQUAL(Resolve(state, "www.core.x", dns::A).rcode, dns::NXDOMAIN);
-    // Before the rule's height it holds the label.
     RegisterSubname sub;
     sub.label = "www";
     sub.data.ipv4 = SocketV4{{198, 51, 100, 9}, 443};
-    params.audit_rules_height = 100;
-    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({core}, 2, 0, sub, 92)}, 5, params, reason));
-    BOOST_CHECK_EQUAL(reason, "bad-bn-name-taken");
-    params.audit_rules_height = 0;
     // The squatter, holding the parent too, cannot keep the squat's coin: the subname would be on two
     // outputs, one of which could be sold while the other still updates or releases it.
     const COutPoint squat_coin{squat.GetHash(), 0};
@@ -633,68 +615,6 @@ BOOST_AUTO_TEST_CASE(squatted_subname_gives_way)
     BOOST_CHECK(!state.Tokens().contains(COutPoint{squat.GetHash(), 0}));
     state.Revert(made);
     BOOST_CHECK(state == before);
-}
-
-BOOST_AUTO_TEST_CASE(orphans_swept_are_not_kept)
-{
-    // Subnames left by a release before the rules sweep away when the name is registered anew; the
-    // registration cannot carry one of them on, or its coin would control the subname again once the
-    // new holder makes it.
-    Consensus::BitNamesParams params;
-    TState state;
-    std::string reason;
-    TUndo undo;
-    const COutPoint core{Registered(state, "core", {}, 10, params)};
-    RegisterSubname sub;
-    sub.label = "blog";
-    const CMutableTransaction made_blog{Tx({core}, 2, 0, sub, 20)};
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{made_blog}, 3, params, undo, reason), reason);
-    const COutPoint blog_coin{made_blog.GetHash(), 1};
-    params.audit_rules_height = 100;
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({COutPoint{made_blog.GetHash(), 0}}, 0, 0, Release{}, 21)}, 4, params, undo, reason), reason);
-    BOOST_REQUIRE(state.Names().contains(SubnameHash(HashName("core"), "blog")));
-    params.audit_rules_height = 0;
-    // Registered again, with the orphan's coin among the inputs and carried on.
-    const NameHash name{HashName("core")};
-    const CMutableTransaction reserve{Reservation(name, uint256{5}, 22)};
-    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 5, params, undo, reason));
-    const COutPoint reservation{reserve.GetHash(), 0};
-    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({reservation, blog_coin}, 2, 0, Register{name, uint256{5}, {}}, 23)}, 6, params, reason));
-    BOOST_CHECK_EQUAL(reason, "bad-bn-released-name-kept");
-    // Without it, the registration sweeps the orphan, and its coin carries no name.
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({reservation}, 1, 0, Register{name, uint256{5}, {}}, 24)}, 6, params, undo, reason), reason);
-    BOOST_CHECK(!state.Names().contains(SubnameHash(HashName("core"), "blog")));
-    BOOST_CHECK(!state.Tokens().contains(blog_coin));
-}
-
-BOOST_AUTO_TEST_CASE(oldest_reservation_reveals)
-{
-    // A copy of someone's reservation, made to register their name first once they reveal it, is younger
-    // than theirs and cannot reveal it. (Commitments to the name alone, before audit2_height.)
-    Consensus::BitNamesParams params;
-    params.audit2_height = 100;
-    TState state;
-    std::string reason;
-    TUndo undo;
-    const NameHash name{HashName("prize")};
-    const uint256 nonce{77};
-    const uint256 commitment{ReservationCommitment(name, nonce)};
-    const CMutableTransaction mine{Tx({}, 0, 1, Reserve{commitment}, 1)};
-    BOOST_REQUIRE(state.ApplyTx(CTransaction{mine}, 1, params, undo, reason));
-    const CMutableTransaction copy{Tx({}, 0, 1, Reserve{commitment}, 2)};
-    BOOST_REQUIRE(state.ApplyTx(CTransaction{copy}, 2, params, undo, reason));
-    // The copier sees the name and nonce in the owner's registration, and races it.
-    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({COutPoint{copy.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 3)}, 3, params, reason));
-    BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-not-first");
-    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({COutPoint{mine.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 4)}, 3, params, reason), reason);
-    // The order is in the store's entries: a copy of them (as a restarted node reads them) keeps it.
-    const TState read{state};
-    BOOST_CHECK(!read.CheckTx(CTransaction{Tx({COutPoint{copy.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 3)}, 3, params, reason));
-    BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-not-first");
-    // And undo.
-    TState reverted{state};
-    reverted.Revert(undo);
-    BOOST_CHECK(reverted == TState{});
 }
 
 BOOST_AUTO_TEST_CASE(numbers_after_register_and_release_in_one_block)
@@ -782,9 +702,9 @@ BOOST_AUTO_TEST_CASE(dns_resolution)
 
 BOOST_AUTO_TEST_CASE(reveal_only_when_deep)
 {
-    // Whoever makes a block sees the name and nonce of every registration waiting for it. Before the
+    // Whoever makes a block sees the name and nonce of every registration waiting for it. Without the
     // rule, it could reserve the name under a nonce of its own and register it in that very block,
-    // ahead of the one it saw: only the mempool kept a reservation from being revealed in its block.
+    // ahead of the one it saw.
     Consensus::BitNamesParams params;
     params.reveal_depth = 6;
     TState state;
@@ -807,20 +727,15 @@ BOOST_AUTO_TEST_CASE(reveal_only_when_deep)
     const CMutableTransaction reg_moved{Tx({COutPoint{moved.GetHash(), 0}}, 1, 0, Register{name, thief_nonce, {}}, 4)};
     BOOST_CHECK(!state.CheckTx(CTransaction{reg_moved}, 15, params, reason));
     BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{reg_moved}, 16, params, reason), reason);
-    // Before the rule's height, in the same block (a commitment to the name alone, as then).
-    params.audit2_height = 100;
-    const CMutableTransaction old{Tx({}, 0, 1, Reserve{ReservationCommitment(name, thief_nonce)}, 5)};
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{old}, 12, params, undo, reason), reason);
-    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({COutPoint{old.GetHash(), 0}}, 1, 0, Register{name, thief_nonce, {}}, 6)}, 12, params, reason), reason);
 }
 
 BOOST_AUTO_TEST_CASE(copies_in_the_same_block_do_not_stop_a_reveal)
 {
     // A reservation's commitment is public in the mempool. Whoever makes a block (or pays a higher fee)
-    // can put a copy of it in the same block: as deep as the original, the copy revealed the name as
-    // well as it, and whoever saw the registration first took the name through the copy. From
-    // audit2_height a commitment binds the script of the reservation's output: a copy to any other
-    // script opens nothing, and one to the maker's script is the maker's.
+    // can put a copy of it in the same block: as deep as the original, a copy that revealed the name as
+    // well as it would let whoever saw the registration first take the name through the copy. A
+    // commitment binds the script of the reservation's output: a copy to any other script opens
+    // nothing, and one to the maker's script is the maker's.
     Consensus::BitNamesParams params;
     params.reveal_depth = 2;
     TState state;
@@ -848,11 +763,6 @@ BOOST_AUTO_TEST_CASE(copies_in_the_same_block_do_not_stop_a_reveal)
     BOOST_REQUIRE(state.ApplyTx(CTransaction{gift}, 4, params, undo, reason));
     BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{reg}, 7, params, reason), reason);
     BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({COutPoint{gift.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 10)}, 7, params, reason), reason);
-    // A commitment to the name alone, made from audit2_height, reveals nothing.
-    const CMutableTransaction unbound{Tx({}, 0, 1, Reserve{ReservationCommitment(name, nonce)}, 5)};
-    BOOST_REQUIRE(state.ApplyTx(CTransaction{unbound}, 5, params, undo, reason));
-    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({COutPoint{unbound.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 6)}, 7, params, reason));
-    BOOST_CHECK_EQUAL(reason, "bad-bn-no-reservation");
     // Revealed, the reservation and where it was made are gone; undone, back.
     const TState before{state};
     TUndo block;
@@ -872,47 +782,9 @@ BOOST_AUTO_TEST_CASE(copies_in_the_same_block_do_not_stop_a_reveal)
     BOOST_CHECK(reverted == TState{});
 }
 
-BOOST_AUTO_TEST_CASE(reservations_from_before_the_bound_ones)
-{
-    // A reservation made before audit2_height commits to the name alone, and has no script kept with
-    // it. Revealed after, another of its commitment from the same block or an earlier one stops it: a
-    // copy from the same block could otherwise reveal the name as well as it.
-    Consensus::BitNamesParams params;
-    params.audit2_height = 10;
-    params.reveal_depth = 2;
-    TState state;
-    TUndo undo;
-    std::string reason;
-    const NameHash name{HashName("old")};
-    const uint256 nonce{5};
-    const uint256 commitment{ReservationCommitment(name, nonce)};
-    const CMutableTransaction alone{Tx({}, 0, 1, Reserve{commitment}, 1)};
-    BOOST_REQUIRE(state.ApplyTx(CTransaction{alone}, 4, params, undo, reason));
-    BOOST_CHECK(!state.View().GetReservationOrigin(alone.GetHash()));
-    const CMutableTransaction reg_alone{Tx({COutPoint{alone.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 2)};
-    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{reg_alone}, 12, params, reason), reason);
-    // A copy from a later block (even one made before the rules) does not stop it.
-    BOOST_REQUIRE(state.ApplyTx(CTransaction{Tx({}, 0, 1, Reserve{commitment}, 3)}, 6, params, undo, reason));
-    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{reg_alone}, 12, params, reason), reason);
-    // A copy from the same block stops it, and itself.
-    const CMutableTransaction twin{Tx({}, 0, 1, Reserve{commitment}, 4)};
-    BOOST_REQUIRE(state.ApplyTx(CTransaction{twin}, 4, params, undo, reason));
-    BOOST_CHECK(!state.CheckTx(CTransaction{reg_alone}, 12, params, reason));
-    BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-not-first");
-    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({COutPoint{twin.GetHash(), 0}}, 1, 0, Register{name, nonce, {}}, 5)}, 12, params, reason));
-    BOOST_CHECK_EQUAL(reason, "bad-bn-reservation-not-first");
-    // Before the rules, the first in the chain's order reveals it (audit_rules_height).
-    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{reg_alone}, 9, params, reason), reason);
-    // Only reservations made from the rules' height have their script kept.
-    const CMutableTransaction bound{Reservation(name, uint256{6}, 7)};
-    BOOST_REQUIRE(state.ApplyTx(CTransaction{bound}, 10, params, undo, reason));
-    BOOST_CHECK(state.View().GetReservationOrigin(bound.GetHash()) == Payee(7));
-    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({COutPoint{bound.GetHash(), 0}}, 1, 0, Register{name, uint256{6}, {}}, 8)}, 12, params, reason), reason);
-}
-
 BOOST_AUTO_TEST_CASE(subname_bounds)
 {
-    // Releasing a name releases everything under it: from audit2_height a name has at most
+    // Releasing a name releases everything under it: a name has at most
     // MAX_SUBNAMES names under it, MAX_SUBNAME_DEPTH levels deep, so that this is bounded work.
     Consensus::BitNamesParams params;
     TState state;
@@ -936,9 +808,6 @@ BOOST_AUTO_TEST_CASE(subname_bounds)
     }
     BOOST_CHECK(!state.CheckTx(CTransaction{Tx({at}, 2, 0, RegisterSubname{"l", {}}, ++salt)}, 3, params, reason));
     BOOST_CHECK_EQUAL(reason, "bad-bn-subname-too-deep");
-    params.audit2_height = 100;
-    BOOST_CHECK_MESSAGE(state.CheckTx(CTransaction{Tx({at}, 2, 0, RegisterSubname{"l", {}}, ++salt)}, 3, params, reason), reason);
-    params.audit2_height = 0;
     // Each name counts the names under it.
     BOOST_CHECK_EQUAL(state.Names().at(core).descendants, MAX_SUBNAME_DEPTH);
     BOOST_CHECK_EQUAL(state.Names().at(chain[2]).descendants, MAX_SUBNAME_DEPTH - 3);
@@ -978,17 +847,9 @@ BOOST_AUTO_TEST_CASE(subname_bounds)
     BOOST_CHECK_MESSAGE(state.CheckTx(release_all, 6, params, reason, MAX_RELAYED_RELEASE), reason);
     BOOST_CHECK(!state.CheckTx(release_all, 6, params, reason, MAX_RELAYED_RELEASE - 1));
     BOOST_CHECK_EQUAL(reason, "bn-release-too-large");
-    // A tree larger than the bound (made before audit2_height): a block may release it, the mempool not.
-    params.audit2_height = 100;
-    const CMutableTransaction extra{Tx({top}, 2, 0, RegisterSubname{"extra", {}}, 11)};
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{extra}, 6, params, undo, reason), reason);
-    params.audit2_height = 0;
-    const CTransaction release_larger{Tx({COutPoint{extra.GetHash(), 0}}, 0, 0, Release{}, 12)};
-    BOOST_CHECK(!state.CheckTx(release_larger, 7, params, reason, MAX_RELAYED_RELEASE));
-    BOOST_CHECK_EQUAL(reason, "bn-release-too-large");
-    BOOST_CHECK_MESSAGE(state.CheckTx(release_larger, 7, params, reason), reason);
+    // A block releases it whole.
     TUndo all;
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(release_larger, 7, params, all, reason), reason);
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(release_all, 7, params, all, reason), reason);
     BOOST_CHECK(!state.Names().contains(core));
     BOOST_CHECK(!state.Names().contains(chain.back()));
 }
@@ -1038,40 +899,6 @@ BOOST_AUTO_TEST_CASE(names_given_to_commands)
     BOOST_CHECK_EQUAL(FullText(state.View(), shown), "");
     shown.text = "fine";
     BOOST_CHECK_EQUAL(FullText(state.View(), shown), "fine");
-}
-
-BOOST_AUTO_TEST_CASE(full_text_is_whole_or_nothing)
-{
-    // Deeper than FullText follows (possible before audit2_height): no text, rather than the text of
-    // the last 64 levels, which is the text of another name.
-    Consensus::BitNamesParams params;
-    params.audit2_height = 1000;
-    TState state;
-    std::string reason;
-    TUndo undo;
-    // A public name, registered with its text.
-    const NameHash pub{HashName("open")};
-    const CMutableTransaction reserve{Tx({}, 0, 1, Reserve{ReservationCommitment(pub, uint256{4})}, 40)};
-    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 1, params, undo, reason));
-    Register reg{pub, uint256{4}, {}};
-    reg.text = "open";
-    const CMutableTransaction registration{Tx({COutPoint{reserve.GetHash(), 0}}, 1, 0, reg, 41)};
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{registration}, 2, params, undo, reason), reason);
-    COutPoint at{registration.GetHash(), 0};
-    NameHash name{pub};
-    for (int depth{1}; depth <= 66; ++depth) {
-        CMutableTransaction tx{Tx({at}, 2, 0, RegisterSubname{"a", {}}, 50)};
-        tx.vin.emplace_back(COutPoint{Txid::FromUint256(uint256{static_cast<uint8_t>(depth)}), 9});
-        BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, 3, params, undo, reason), reason);
-        name = SubnameHash(name, "a");
-        at = COutPoint{tx.GetHash(), 1};
-        const std::string text{FullText(state.View(), state.Names().at(name))};
-        if (depth <= 64) {
-            BOOST_CHECK_EQUAL(text.size(), static_cast<size_t>(depth) * 2 + 4);
-        } else {
-            BOOST_CHECK_EQUAL(text, "");
-        }
-    }
 }
 
 BOOST_AUTO_TEST_CASE(dns_answer_count)
@@ -1128,65 +955,6 @@ BOOST_AUTO_TEST_CASE(dns_rate_limit)
     const auto t2{t0 + std::chrono::seconds{10}};
     BOOST_CHECK(limiter.Allow("d", t2));
     BOOST_CHECK_EQUAL(limiter.Sources(), 1U);
-}
-
-BOOST_AUTO_TEST_CASE(subname_made_again_sweeps_its_orphans)
-{
-    // A subname released before releasing took its subnames along left them under its hash. Made again
-    // under its parent (from audit2_height), the new holder starts with an empty namespace, as a
-    // top-level name registered again does; and no coin carries one of them on.
-    Consensus::BitNamesParams params;
-    TState state;
-    std::string reason;
-    TUndo undo;
-    const COutPoint g{Registered(state, "g", {}, 10, params)};
-    const CMutableTransaction made_p{Tx({g}, 2, 0, RegisterSubname{"p", {}}, 20)};
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{made_p}, 3, params, undo, reason), reason);
-    const NameHash p{SubnameHash(HashName("g"), "p")};
-    const CMutableTransaction made_q{Tx({COutPoint{made_p.GetHash(), 1}}, 2, 0, RegisterSubname{"q", {}}, 21)};
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{made_q}, 4, params, undo, reason), reason);
-    const NameHash q{SubnameHash(p, "q")};
-    const COutPoint q_coin{made_q.GetHash(), 1};
-    const COutPoint g_coin{made_p.GetHash(), 0};
-    // Released under the old rules: q stays, under p's hash.
-    params.audit_rules_height = 100;
-    params.audit2_height = 100;
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({COutPoint{made_q.GetHash(), 0}}, 0, 0, Release{}, 22)}, 5, params, undo, reason), reason);
-    BOOST_REQUIRE(!state.Names().contains(p));
-    BOOST_REQUIRE(state.Names().contains(q));
-    {
-        // Before audit2_height, p made again finds q under it.
-        TState old{state};
-        TUndo u;
-        BOOST_REQUIRE_MESSAGE(old.ApplyTx(CTransaction{Tx({g_coin}, 2, 0, RegisterSubname{"p", {}}, 23)}, 6, params, u, reason), reason);
-        BOOST_CHECK(old.Names().contains(q));
-        // q is older than p's registration: the holder of p did not make it, and no text or DNS reaches it.
-        BOOST_CHECK(IsOrphan(old.Names().at(q), old.Names().at(p)));
-        BOOST_CHECK(ParseNameArg(UniValue{"p.g"}, old.View()) == p);
-        BOOST_CHECK_THROW(ParseNameArg(UniValue{"q.p.g"}, old.View()), UniValue);
-        BOOST_CHECK(ParseNameArg(UniValue{"0x" + q.GetHex()}, old.View()) == q);
-        BOOST_CHECK_EQUAL(Resolve(old, "q.p.g.x", dns::A).rcode, dns::NXDOMAIN);
-        BOOST_CHECK_EQUAL(Resolve(old, "p.g.x", dns::A).rcode, dns::NOERROR);
-        // Made under it now, a subname is reached.
-        BOOST_REQUIRE_MESSAGE(old.ApplyTx(CTransaction{Tx({COutPoint{Tx({g_coin}, 2, 0, RegisterSubname{"p", {}}, 23).GetHash(), 1}}, 2, 0, RegisterSubname{"r", {}}, 26)}, 7, params, u, reason), reason);
-        BOOST_CHECK(ParseNameArg(UniValue{"r.p.g"}, old.View()) == SubnameHash(p, "r"));
-        BOOST_CHECK_EQUAL(Resolve(old, "r.p.g.x", dns::A).rcode, dns::NOERROR);
-    }
-    params.audit_rules_height = 0;
-    params.audit2_height = 0;
-    // The holder of q, holding g too, cannot carry q on while making p again.
-    BOOST_CHECK(!state.CheckTx(CTransaction{Tx({q_coin, g_coin}, 3, 0, RegisterSubname{"p", {}}, 24)}, 6, params, reason));
-    BOOST_CHECK_EQUAL(reason, "bad-bn-released-name-kept");
-    const TState before{state};
-    TUndo block;
-    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({g_coin}, 2, 0, RegisterSubname{"p", {}}, 25)}, 6, params, block, reason), reason);
-    BOOST_CHECK(state.Names().contains(p));
-    BOOST_CHECK(!state.Names().contains(q));
-    BOOST_CHECK(!state.Tokens().contains(q_coin));
-    BOOST_CHECK_EQUAL(state.Names().at(p).descendants, 0U);
-    BOOST_CHECK_EQUAL(state.Names().at(HashName("g")).descendants, 1U);
-    state.Revert(block);
-    BOOST_CHECK(state == before);
 }
 
 BOOST_AUTO_TEST_CASE(dns_delegate_to_a_subname)

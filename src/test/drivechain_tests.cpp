@@ -2663,8 +2663,6 @@ BOOST_AUTO_TEST_CASE(database_params_fingerprint)
     BOOST_CHECK(side_changed([](auto& p) { ++p.unproposed_expiry_blocks; }) != side_fingerprint);
     BOOST_CHECK(side_changed([](auto& p) { ++p.main_activation_height; }) != side_fingerprint);
     // The rules of the names, whose state is in the store, count too.
-    BOOST_CHECK(side_changed([](auto& p) { ++p.bitnames.audit_rules_height; }) != side_fingerprint);
-    BOOST_CHECK(side_changed([](auto& p) { ++p.bitnames.audit2_height; }) != side_fingerprint);
     BOOST_CHECK(side_changed([](auto& p) { ++p.bitnames.reveal_depth; }) != side_fingerprint);
     BOOST_CHECK(side_changed([](auto& p) { p.bitnames.icann_authority = uint256::ONE; }) != side_fingerprint);
     BOOST_CHECK(side_changed([](auto&) {}) == side_fingerprint);

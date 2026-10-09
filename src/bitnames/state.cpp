@@ -248,13 +248,6 @@ NameHash HashName(const std::string& name)
     return hash;
 }
 
-uint256 ReservationCommitment(const NameHash& name, const uint256& nonce)
-{
-    uint256 commitment;
-    CHMAC_SHA256(nonce.data(), nonce.size()).Write(name.data(), name.size()).Finalize(commitment.data());
-    return commitment;
-}
-
 uint256 ReservationCommitment(const NameHash& name, const uint256& nonce, const CScript& script)
 {
     uint256 commitment;
@@ -422,7 +415,7 @@ struct State::Plan {
     std::vector<std::pair<NameHash, NameRecord>> names;
     std::optional<Txid> reservation_made;
     uint256 reservation_commitment;
-    //! From audit2_height: the script of the output of the reservation made, which its commitment binds.
+    //! The script of the output of the reservation made, which its commitment binds.
     std::optional<CScript> reservation_origin;
     std::optional<Txid> reservation_revealed;
     std::optional<std::pair<uint32_t, NameHash>> seq;
@@ -451,12 +444,9 @@ const sidechain::Table<COutPoint, Token> TOKENS{0x20};
 const sidechain::Table<uint256, NameRecord> NAMES{0x21};
 const sidechain::Table<uint256, ReservationRecord> RESERVATIONS{0x22};
 const sidechain::Table<uint32_t, uint256> SEQ{0x23};
-const sidechain::Table<uint256, uint64_t> ORDER{0x24};
 const sidechain::Cell<uint32_t> NEXT_SEQ{0x25, 0};
-const sidechain::Cell<uint64_t> NEXT_ORDER{0x26, 1};
 const sidechain::TableId CHILDREN{0x27};
 const sidechain::TableId NAME_TOKENS{0x28};
-const sidechain::TableId BY_COMMITMENT{0x29};
 const sidechain::Cell<uint64_t> NAME_COUNT{0x2a, 0};
 const sidechain::Cell<uint64_t> RESERVATION_COUNT{0x2b, 0};
 const sidechain::TableId HISTORY{0x2c};
@@ -474,15 +464,6 @@ sidechain::StoreBytes NameTokenKey(const uint256& name, const COutPoint& outpoin
     sidechain::StoreBytes key{NAME_TOKENS};
     sidechain::KeyCodec<uint256>::Encode(key, name);
     sidechain::KeyCodec<COutPoint>::Encode(key, outpoint);
-    return key;
-}
-sidechain::StoreBytes CommitmentKey(const uint256& commitment, int height, uint64_t order, const Txid& id)
-{
-    sidechain::StoreBytes key{BY_COMMITMENT};
-    sidechain::KeyCodec<uint256>::Encode(key, commitment);
-    sidechain::KeyCodec<uint32_t>::Encode(key, static_cast<uint32_t>(height));
-    sidechain::KeyCodec<uint64_t>::Encode(key, order);
-    sidechain::KeyCodec<uint256>::Encode(key, id.ToUint256());
     return key;
 }
 /**
@@ -587,7 +568,6 @@ uint32_t State::NextSeq() const { return NEXT_SEQ.Get(*m_view); }
 void State::ForEachSeq(uint32_t from, const std::function<bool(uint32_t, const NameHash&)>& fn) const { SEQ.ForEach(*m_view, fn, from); }
 uint64_t State::NameCount() const { return NAME_COUNT.Get(*m_view); }
 uint64_t State::ReservationCount() const { return RESERVATION_COUNT.Get(*m_view); }
-std::optional<uint64_t> State::OrderOf(const Txid& id) const { return ORDER.Get(*m_view, id.ToUint256()); }
 
 void State::ForEachName(const std::function<bool(const NameHash&, const NameRecord&)>& fn) const { NAMES.ForEach(*m_view, fn); }
 void State::ForEachToken(const std::function<bool(const COutPoint&, const Token&)>& fn) const { TOKENS.ForEach(*m_view, fn); }
@@ -647,30 +627,13 @@ void State::SetReservation(const Txid& id, const std::optional<ReservationRecord
 {
     sidechain::StoreOverlay& out{Writable()};
     const auto old{GetReservationRecord(id)};
-    const uint64_t order{OrderOf(id).value_or(0)};
-    if (old) out.Erase(CommitmentKey(old->commitment, old->height, order, id));
     if (reservation) {
         RESERVATIONS.Put(out, id.ToUint256(), *reservation);
-        out.Put(CommitmentKey(reservation->commitment, reservation->height, order, id), {});
         if (!old) RESERVATION_COUNT.Put(out, ReservationCount() + 1);
     } else if (old) {
         RESERVATIONS.Erase(out, id.ToUint256());
         RESERVATION_COUNT.Put(out, ReservationCount() - 1);
     }
-}
-
-void State::SetOrder(const Txid& id, const std::optional<uint64_t>& order)
-{
-    sidechain::StoreOverlay& out{Writable()};
-    // The commitment index is keyed by order: moved with it.
-    const auto reservation{GetReservationRecord(id)};
-    if (reservation) out.Erase(CommitmentKey(reservation->commitment, reservation->height, OrderOf(id).value_or(0), id));
-    if (order) {
-        ORDER.Put(out, id.ToUint256(), *order);
-    } else {
-        ORDER.Erase(out, id.ToUint256());
-    }
-    if (reservation) out.Put(CommitmentKey(reservation->commitment, reservation->height, order.value_or(0), id), {});
 }
 
 std::vector<std::pair<uint32_t, Token>> State::SpentTokens(const CTransaction& tx) const
@@ -725,8 +688,7 @@ std::optional<std::set<NameHash>> State::ReleaseDescendants(Plan& plan, const st
 void State::CountOut(Plan& plan, const std::set<NameHash>& gone) const
 {
     // Each name that goes from under a name that stays takes itself and its own count off every
-    // name above it. Counts below zero (subnames left by releases before audit_rules_height, taken
-    // in by the next holder of their parent) stop at zero.
+    // name above it.
     std::map<NameHash, NameRecord> above;
     for (const NameHash& name : gone) {
         const auto record{GetName(name)};
@@ -790,76 +752,28 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         plan.reservation_made = txid;
         plan.reservation_commitment = reserve->commitment;
         // What its commitment binds: the script of its output (the last reservation output).
-        if (height >= params.audit2_height) plan.reservation_origin = tx.vout[marker->reservation_outputs.back()].scriptPubKey;
+        plan.reservation_origin = tx.vout[marker->reservation_outputs.back()].scriptPubKey;
     } else if (const auto* reg{op ? std::get_if<Register>(op) : nullptr}) {
         // Names registered before, in this block included, are taken.
         if (HasName(reg->name)) return invalid("bad-bn-name-taken");
-        const bool audit2{height >= params.audit2_height};
-        const uint256 implied{ReservationCommitment(reg->name, reg->nonce)};
-        // From audit2_height, a reservation bound to the script of its output: nobody but its maker can
-        // have made it (a copy to another script commits to nothing anyone can open, one to the maker's
-        // script is the maker's), so it reveals the name whatever other reservations there are.
+        // A reservation is bound to the script of its output: nobody but its maker can have made it (a
+        // copy to another script commits to nothing anyone can open, one to the maker's script is the
+        // maker's), so it reveals the name whatever other reservations there are.
         auto burned{reservations_out.end()};
-        bool bound{false};
         for (auto it{reservations_out.begin()}; it != reservations_out.end(); ++it) {
-            const Txid id{Txid::FromUint256(it->id)};
-            if (audit2) {
-                if (const auto script{GetReservationOrigin(id)}; script && it->commitment == ReservationCommitment(reg->name, reg->nonce, *script)) {
-                    burned = it;
-                    bound = true;
-                    break;
-                }
-                // A commitment to the name alone: only from a reservation made before these rules.
-                if (ReservationHeight(id).value_or(0) >= params.audit2_height) continue;
+            const auto script{GetReservationOrigin(Txid::FromUint256(it->id))};
+            if (script && it->commitment == ReservationCommitment(reg->name, reg->nonce, *script)) {
+                burned = it;
+                break;
             }
-            if (burned == reservations_out.end() && it->commitment == implied) burned = it;
         }
         if (burned == reservations_out.end()) return invalid("bad-bn-no-reservation");
         if (ri != ro + 1 || bo != bi + 1) return invalid("bad-bn-unbalanced");
-        const Txid mine{Txid::FromUint256(burned->id)};
-        const int reserved_at{ReservationHeight(mine).value_or(0)};
+        const int reserved_at{ReservationHeight(Txid::FromUint256(burned->id)).value_or(0)};
         // Only once the reservation is deep enough: whoever makes this block saw the name and the
         // nonce of every registration waiting for it, and could have reserved the name under a
         // nonce of its own, in this very block, to register it first.
-        if (audit2 && height - reserved_at < params.reveal_depth) return invalid("bad-bn-reservation-too-young");
-        if (!bound && (audit2 || height >= params.audit_rules_height)) {
-            // A copy of someone else's reservation, made to register the name first once they
-            // reveal it, cannot reveal it. The index of reservations by commitment has them oldest
-            // first (by height, then order: orders grow with height, and reservations without one
-            // are older than any with one).
-            sidechain::StoreBytes prefix{BY_COMMITMENT};
-            sidechain::KeyCodec<uint256>::Encode(prefix, implied);
-            if (audit2) {
-                // A reservation made before these rules, revealed after them: another of the same
-                // commitment from the same block or an earlier one stops it. One from an earlier block
-                // is older than any copy made after seeing this one in the mempool; one from the same
-                // block may be a copy whoever made the block put there, and could reveal the name as
-                // well as this one: neither does, rather than the copier.
-                bool other_first{false};
-                m_view->ForEach(prefix, [&](const sidechain::StoreBytes& key, const sidechain::StoreBytes&) {
-                    std::span<const unsigned char> in{key};
-                    in = in.subspan(prefix.size());
-                    const int other_height{static_cast<int>(sidechain::KeyCodec<uint32_t>::Decode(in))};
-                    if (other_height > reserved_at) return false;
-                    sidechain::KeyCodec<uint64_t>::Decode(in);
-                    const Txid other{Txid::FromUint256(sidechain::KeyCodec<uint256>::Decode(in))};
-                    if (other != mine) {
-                        other_first = true;
-                        return false;
-                    }
-                    return true;
-                });
-                if (other_first) return invalid("bad-bn-reservation-not-first");
-            } else if (const auto first{m_view->Next(prefix, prefix)}) {
-                // The first one says.
-                std::span<const unsigned char> in{first->first};
-                in = in.subspan(prefix.size());
-                sidechain::KeyCodec<uint32_t>::Decode(in);
-                const uint64_t order{sidechain::KeyCodec<uint64_t>::Decode(in)};
-                const Txid other{Txid::FromUint256(sidechain::KeyCodec<uint256>::Decode(in))};
-                if (other != mine && order < OrderOf(mine).value_or(0)) return invalid("bad-bn-reservation-not-first");
-            }
-        }
+        if (height - reserved_at < params.reveal_depth) return invalid("bad-bn-reservation-too-young");
         plan.reservation_revealed = Txid::FromUint256(burned->id);
         reservations_out.erase(burned);
         names_out.push_back(reg->name);
@@ -872,27 +786,6 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         if (reg->text) record.text = *reg->text;
         plan.names.emplace_back(reg->name, std::move(record));
         plan.seq = std::make_pair(NextSeq(), reg->name);
-        if (height >= params.audit_rules_height) {
-            // Subnames left by an earlier holder of the name, released before releasing took them
-            // along, go now: the new holder starts with an empty namespace.
-            std::vector<NameHash> orphans;
-            sidechain::StoreBytes prefix{CHILDREN};
-            sidechain::KeyCodec<uint256>::Encode(prefix, reg->name);
-            for (const auto& rest : Under(*m_view, prefix)) {
-                std::span<const unsigned char> in{rest};
-                orphans.push_back(sidechain::KeyCodec<uint256>::Decode(in));
-            }
-            if (!orphans.empty()) {
-                plan.names_released.insert(plan.names_released.end(), orphans.begin(), orphans.end());
-                const auto gone{ReleaseDescendants(plan, orphans)};
-                if (!gone) return invalid(too_large);
-                // None of them carried on: an output would carry a name that is no more, and control
-                // it again once someone registers it anew.
-                for (const NameHash& name : names_in) {
-                    if (gone->contains(name)) return invalid("bad-bn-released-name-kept");
-                }
-            }
-        }
     } else if (const auto* update{op ? std::get_if<UpdateName>(op) : nullptr}) {
         if (bi < 1 || bo != bi || ro != ri) return invalid(bi < 1 ? "bad-bn-no-name" : "bad-bn-unbalanced");
         // The name updated is the one spent last; the others only move.
@@ -933,18 +826,14 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             if (!HasName(names_in[i])) return invalid("bad-bn-name-unknown");
             plan.names_released.push_back(names_in[i]);
         }
-        std::set<NameHash> released;
-        if (height >= params.audit_rules_height) {
-            // The subnames of the released names, at any depth, go with them.
-            auto gone{ReleaseDescendants(plan, plan.names_released)};
-            if (!gone) return invalid(too_large);
-            released = std::move(*gone);
-            for (size_t i{0}; i < bo; ++i) {
-                if (released.contains(names_in[i])) return invalid("bad-bn-release-subname-kept");
-            }
+        // The subnames of the released names, at any depth, go with them.
+        const auto released{ReleaseDescendants(plan, plan.names_released)};
+        if (!released) return invalid(too_large);
+        for (size_t i{0}; i < bo; ++i) {
+            if (released->contains(names_in[i])) return invalid("bad-bn-release-subname-kept");
         }
         // The names above those released count them out.
-        CountOut(plan, height >= params.audit_rules_height ? released : std::set<NameHash>{plan.names_released.begin(), plan.names_released.end()});
+        CountOut(plan, *released);
         for (size_t i{ro}; i < ri; ++i) plan.reservations_released.push_back(Txid::FromUint256(reservations_in[i].id));
         names_out.resize(bo);
         reservations_out.resize(ro);
@@ -955,13 +844,13 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
         const auto parent_record{GetName(parent)};
         if (!parent_record) return invalid("bad-bn-name-unknown");
         const uint32_t depth{parent_record->depth + 1};
-        if (height >= params.audit2_height && depth > MAX_SUBNAME_DEPTH) return invalid("bad-bn-subname-too-deep");
+        if (depth > MAX_SUBNAME_DEPTH) return invalid("bad-bn-subname-too-deep");
         const NameHash child{SubnameHash(parent, sub->label)};
         if (const auto taken{GetName(child)}) {
             // A top-level name with the hash of this subname can only be one registered by its hash,
-            // with no text that hashes to it: a squat. From the rule's height it gives way, with
-            // whatever was made under it; a real subname of that label is taken.
-            if (taken->parent || height < params.audit_rules_height) return invalid("bad-bn-name-taken");
+            // with no text that hashes to it: a squat. It gives way, with whatever was made under it;
+            // a real subname of that label is taken.
+            if (taken->parent) return invalid("bad-bn-name-taken");
             plan.names_replaced.push_back(child);
             const auto gone{ReleaseDescendants(plan, {child})};
             if (!gone) return invalid(too_large);
@@ -969,19 +858,6 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             // or an output would carry a name that is no more.
             for (const NameHash& name : names_in) {
                 if (gone->contains(name)) return invalid("bad-bn-released-name-kept");
-            }
-        } else if (height >= params.audit2_height) {
-            // Subnames left under it by an earlier holder, released before releasing took them along
-            // (it was made, released, and is made again), go now, as they do when a top-level name is
-            // registered again: the new holder starts with an empty namespace.
-            const std::vector<NameHash> orphans{ChildrenOf(child)};
-            if (!orphans.empty()) {
-                plan.names_released.insert(plan.names_released.end(), orphans.begin(), orphans.end());
-                const auto gone{ReleaseDescendants(plan, orphans)};
-                if (!gone) return invalid(too_large);
-                for (const NameHash& name : names_in) {
-                    if (gone->contains(name)) return invalid("bad-bn-released-name-kept");
-                }
             }
         }
         // Each name above it counts it; the one at the top counts every name in its tree.
@@ -993,7 +869,7 @@ std::optional<State::Plan> State::MakePlan(const CTransaction& tx, int height, c
             at = ancestor->parent;
             above.emplace_back(here, std::move(*ancestor));
         }
-        if (height >= params.audit2_height && above.back().second.descendants >= MAX_SUBNAMES) return invalid("bad-bn-too-many-subnames");
+        if (above.back().second.descendants >= MAX_SUBNAMES) return invalid("bad-bn-too-many-subnames");
         for (auto& [hash, ancestor] : above) {
             ++ancestor.descendants;
             plan.names.emplace_back(hash, std::move(ancestor));
@@ -1040,16 +916,6 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::BitName
     for (const auto& [outpoint, token] : plan->created) SetToken(outpoint, token);
     if (plan->reservation_made) SetReservation(*plan->reservation_made, ReservationRecord{plan->reservation_commitment, height});
     if (plan->reservation_made && plan->reservation_origin) ORIGINS.Put(out, plan->reservation_made->ToUint256(), *plan->reservation_origin);
-    // The order of reservations, for the rule that the oldest of a commitment reveals it.
-    if (plan->reservation_made && height >= params.audit_rules_height) {
-        const uint64_t next{NEXT_ORDER.Get(*m_view)};
-        SetOrder(*plan->reservation_made, next);
-        NEXT_ORDER.Put(out, next + 1);
-    }
-    if (plan->reservation_revealed && OrderOf(*plan->reservation_revealed)) SetOrder(*plan->reservation_revealed, std::nullopt);
-    for (const Txid& id : plan->reservations_released) {
-        if (OrderOf(id)) SetOrder(id, std::nullopt);
-    }
     if (plan->reservation_revealed) SetReservation(*plan->reservation_revealed, std::nullopt);
     const auto forget_origin{[&](const Txid& id) {
         if (ORIGINS.Contains(*m_view, id.ToUint256())) ORIGINS.Erase(out, id.ToUint256());
