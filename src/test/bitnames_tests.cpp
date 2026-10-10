@@ -1122,4 +1122,83 @@ BOOST_AUTO_TEST_CASE(numbers_skip_released_names)
     BOOST_CHECK(seqs(3).empty());
 }
 
+BOOST_AUTO_TEST_CASE(record_rows)
+{
+    const auto rows{[](std::vector<std::tuple<std::string, std::string, std::string>> list) {
+        UniValue out(UniValue::VARR);
+        for (const auto& [host, type, value] : list) {
+            UniValue row(UniValue::VOBJ);
+            row.pushKV("host", host);
+            row.pushKV("type", type);
+            row.pushKV("value", value);
+            out.push_back(row);
+        }
+        return out;
+    }};
+    const auto message{[](const auto& f) {
+        try {
+            f();
+        } catch (const UniValue& e) {
+            return e.find_value("message").get_str();
+        }
+        return std::string{};
+    }};
+    // TLSA, as written in zone files; NS; and the rows read back.
+    const std::string records{RecordsFromRows(rows({{"_443._tcp", "tlsa", "3 1 1 aabb"}, {"@", "NS", "ns1"}, {"@", "NS", "ns2"}}))};
+    BOOST_CHECK_EQUAL(records, R"({"ns":["ns1","ns2"],"map":{"_tcp":{"map":{"_443":{"tls":[[3,1,1,"aabb"]]}}}}})");
+    const UniValue back{RowsFromRecords(records)};
+    BOOST_REQUIRE_EQUAL(back.size(), 3U);
+    BOOST_CHECK_EQUAL(back[0]["type"].get_str(), "NS");
+    BOOST_CHECK_EQUAL(back[2]["host"].get_str(), "_443._tcp");
+    BOOST_CHECK_EQUAL(back[2]["value"].get_str(), "3 1 1 aabb");
+    BOOST_CHECK_EQUAL(message([&] { RecordsFromRows(rows({{"@", "TLSA", "3 1 aabb"}})); }), "TLSA: usage selector type data, such as 3 1 1 ab12...");
+    BOOST_CHECK_EQUAL(message([&] { RecordsFromRows(rows({{"@", "SPF", "v=spf1"}})); }), "Record types: A, AAAA, CNAME, TXT, MX, SRV, NS, TLSA, DELEGATE");
+    BOOST_CHECK_EQUAL(message([&] { RecordsFromRows(UniValue{"rows"}); }), "records: a list of rows");
+    BOOST_CHECK_EQUAL(message([&] { RecordsFromRows(rows({{"@", "CNAME", "a"}, {"@", "CNAME", "b"}})); }), "One CNAME per host");
+    BOOST_CHECK(message([&] { RecordsFromRows(rows({{"a b", "A", "192.0.2.1"}})); }).starts_with("host: labels"));
+    // A host of the map that is an address alone is an A row.
+    const UniValue plain{RowsFromRecords(R"({"map": {"www": "192.0.2.5"}})")};
+    BOOST_REQUIRE_EQUAL(plain.size(), 1U);
+    // Of that host, not of the name: the rows are what the wallet writes back (the page saves what it shows).
+    BOOST_CHECK_EQUAL(plain[0].write(), R"({"host":"www","type":"A","value":"192.0.2.5"})");
+    BOOST_CHECK_EQUAL(RecordsFromRows(plain), R"({"map":{"www":{"ip":"192.0.2.5"}}})");
+    BOOST_CHECK(RowsFromRecords("not json").empty());
+
+    // An update deletes any field given as null, and checks every value.
+    UniValue all_null(UniValue::VOBJ);
+    for (const char* field : {"commitment", "ipv4", "ipv6", "encryptionkey", "signingkey", "paymailfee", "records"}) all_null.pushKV(field, UniValue{});
+    const NameUpdates deleted{ParseUpdates(all_null)};
+    bool every{true};
+    ForEachField(deleted, [&](Field, const auto& update) { every &= update.kind == UpdateKind::DELETE; });
+    BOOST_CHECK(every);
+    const auto field{[](const std::string& key, const UniValue& value) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV(key, value);
+        return obj;
+    }};
+    BOOST_CHECK_EQUAL(message([&] { ParseData(UniValue{"x"}); }), "The data of a name is an object");
+    BOOST_CHECK_EQUAL(message([&] { ParseData(field("colour", "red")); }), "Unknown field of name data: colour");
+    BOOST_CHECK_EQUAL(message([&] { ParseData(field("commitment", "11")); }), "commitment: 32 bytes in hex");
+    BOOST_CHECK(message([&] { ParseData(field("ipv4", "2001:db8::1")); }).starts_with("ipv4: an IPv4 address"));
+    BOOST_CHECK(message([&] { ParseData(field("ipv6", "192.0.2.1")); }).starts_with("ipv6: an IPv6 address"));
+    BOOST_CHECK_EQUAL(message([&] { ParseData(field("encryptionkey", std::string(66, '0'))); }), "encryptionkey: a compressed public key, 33 bytes in hex");
+    BOOST_CHECK_EQUAL(message([&] { ParseData(field("signingkey", std::string(64, 'f'))); }), "signingkey: an x-only public key, 32 bytes in hex");
+    BOOST_CHECK_EQUAL(message([&] { ParseData(field("records", "[1]")); }), "records: a JSON object");
+    BOOST_CHECK_EQUAL(message([&] { ParseData(field("records", R"({"txt":")" + std::string(MAX_RECORDS_SIZE, 'a') + R"("})")); }),
+                      strprintf("records: at most %u bytes of JSON", MAX_RECORDS_SIZE));
+    // Records given as an object, not as text, are the same.
+    UniValue object(UniValue::VOBJ);
+    object.pushKV("ip", "192.0.2.1");
+    BOOST_CHECK(ParseData(field("records", object)).records == std::string{R"({"ip":"192.0.2.1"})"});
+    // Shown back: addresses with their ports, or alone.
+    NameData data;
+    data.ipv4 = SocketV4{{192, 0, 2, 1}, 0};
+    data.ipv6 = SocketV6{{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, 0};
+    data.records = "{}";
+    const UniValue shown{DataToJSON(data)};
+    BOOST_CHECK_EQUAL(shown["ipv4"].get_str(), "192.0.2.1");
+    BOOST_CHECK_EQUAL(shown["ipv6"].get_str(), "2001:db8::1");
+    BOOST_CHECK(shown["records"].isObject());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

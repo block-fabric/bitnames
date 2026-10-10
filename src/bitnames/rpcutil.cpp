@@ -268,7 +268,10 @@ void RowsOf(const UniValue& node, const std::string& host, UniValue& rows)
             const UniValue& sub{map[label]};
             const std::string sub_host{label.empty() ? host : (host == "@" ? label : label + "." + host)};
             if (sub.isStr()) {
-                add("A", sub.get_str());
+                // An address alone, as DNS reads it: {"ip": address}, of the host under this one.
+                UniValue node(UniValue::VOBJ);
+                node.pushKV("ip", sub.get_str());
+                RowsOf(node, sub_host, rows);
             } else {
                 RowsOf(sub, sub_host, rows);
             }
