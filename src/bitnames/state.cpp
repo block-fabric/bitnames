@@ -497,11 +497,6 @@ std::optional<Token> State::GetToken(const COutPoint& outpoint) const { return T
 std::optional<NameRecord> State::GetName(const NameHash& name) const { return NAMES.Get(*m_view, name); }
 bool State::HasName(const NameHash& name) const { return NAMES.Contains(*m_view, name); }
 std::optional<ReservationRecord> State::GetReservationRecord(const Txid& id) const { return RESERVATIONS.Get(*m_view, id.ToUint256()); }
-std::optional<uint256> State::GetReservation(const Txid& id) const
-{
-    if (const auto record{GetReservationRecord(id)}) return record->commitment;
-    return std::nullopt;
-}
 std::optional<int> State::ReservationHeight(const Txid& id) const
 {
     if (const auto record{GetReservationRecord(id)}) return record->height;

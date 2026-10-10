@@ -455,8 +455,6 @@ public:
     std::optional<Token> GetToken(const COutPoint& outpoint) const;
     std::optional<NameRecord> GetName(const NameHash& name) const;
     bool HasName(const NameHash& name) const;
-    /** The commitment of a reservation not revealed yet. */
-    std::optional<uint256> GetReservation(const Txid& id) const;
     /** The height of the block that made a reservation not revealed yet. */
     std::optional<int> ReservationHeight(const Txid& id) const;
     /** The script of the output that carried a reservation when it was made. */
