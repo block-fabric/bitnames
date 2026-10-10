@@ -102,6 +102,12 @@ public:
         return n;
     }
     uint32_t NextSeq() const { return View().NextSeq(); }
+    /** Write what an output carries straight into the table (0x20), as no transaction would: a state the rules never make. */
+    void PutToken(const COutPoint& outpoint, const Token& token)
+    {
+        sidechain::Table<COutPoint, Token>{0x20}.Put(*m_store, outpoint, token);
+        m_store->TakeUndo();
+    }
     friend bool operator==(const TState& a, const TState& b) { return sidechain::StoreHash(*a.m_store) == sidechain::StoreHash(*b.m_store); }
 
 private:
@@ -1120,6 +1126,539 @@ BOOST_AUTO_TEST_CASE(numbers_skip_released_names)
     BOOST_CHECK((seqs(0) == std::vector<uint32_t>{0, 2}));
     BOOST_CHECK((seqs(1) == std::vector<uint32_t>{2}));
     BOOST_CHECK(seqs(3).empty());
+}
+
+namespace {
+/** The bytes a marker script pushes, after OP_RETURN. */
+std::vector<unsigned char> PushedBytes(const CScript& script)
+{
+    CScript::const_iterator pc{script.begin() + 1};
+    opcodetype opcode;
+    std::vector<unsigned char> data;
+    BOOST_REQUIRE(script.GetOp(pc, opcode, data));
+    return data;
+}
+
+/** A marker script of the tag and then `body`, as it is: well formed or not. */
+CScript RawMarker(const std::vector<unsigned char>& body)
+{
+    std::vector<unsigned char> data{std::begin(TAG), std::end(TAG)};
+    data.insert(data.end(), body.begin(), body.end());
+    return CScript() << OP_RETURN << data;
+}
+
+/** A transaction with `before` outputs of no value (to carry names), the marker, then `after` payments. */
+CMutableTransaction WithMarker(const CScript& marker, size_t before, size_t after = 1)
+{
+    CMutableTransaction tx;
+    tx.vin.emplace_back(COutPoint{Txid::FromUint256(uint256{77}), 1});
+    for (size_t i{0}; i < before; ++i) tx.vout.emplace_back(0, Payee(1));
+    tx.vout.emplace_back(0, marker);
+    for (size_t i{0}; i < after; ++i) tx.vout.emplace_back(1000, Payee(2));
+    return tx;
+}
+CMutableTransaction WithMarker(const Marker& marker, size_t before, size_t after = 1) { return WithMarker(MarkerScript(marker), before, after); }
+
+Marker WithOp(Operation op, std::vector<uint32_t> names = {}, std::vector<uint32_t> reservations = {})
+{
+    Marker marker;
+    marker.operation = std::move(op);
+    marker.name_outputs = std::move(names);
+    marker.reservation_outputs = std::move(reservations);
+    return marker;
+}
+
+EncryptionKey GoodEncryptionKey(const CKey& key)
+{
+    EncryptionKey out;
+    const CPubKey pubkey{key.GetPubKey()};
+    std::copy(pubkey.begin(), pubkey.end(), out.begin());
+    return out;
+}
+
+struct RejectCase {
+    std::string what;
+    CMutableTransaction tx;
+    std::string reason;
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(marker_roundtrip_every_kind)
+{
+    // Every operation, in both forms of the marker: written, read back the same, and written in the
+    // extended form exactly when it carries records or the text of a name.
+    CKey key;
+    key.MakeNewKey(true);
+    NameData full;
+    full.commitment = uint256{1};
+    full.ipv4 = SocketV4{{203, 0, 113, 7}, 443};
+    full.ipv6 = SocketV6{{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7}, 8333};
+    full.encryption_key = GoodEncryptionKey(key);
+    full.signing_key = uint256{XOnlyPubKey{key.GetPubKey()}};
+    full.paymail_fee = 5000;
+    NameData with_records{full};
+    with_records.records = R"({"ip":"203.0.113.7"})";
+    Register reg_text{HashName("core"), uint256{2}, full};
+    reg_text.text = "core";
+    NameUpdates all_kinds;
+    all_kinds.commitment = {UpdateKind::SET, uint256{3}};
+    all_kinds.ipv4 = {UpdateKind::DELETE, std::nullopt};
+    all_kinds.ipv6 = {UpdateKind::SET, full.ipv6};
+    all_kinds.signing_key = {UpdateKind::DELETE, std::nullopt};
+    all_kinds.paymail_fee = {UpdateKind::SET, 7};
+    NameUpdates records_set{all_kinds};
+    records_set.records = {UpdateKind::SET, std::string{R"({"txt":"hi"})"}};
+    NameUpdates records_deleted;
+    records_deleted.records = {UpdateKind::DELETE, std::nullopt};
+    const std::vector<std::tuple<std::string, Marker, uint8_t>> cases{
+        {"no operation", WithOp(Release{}, {}, {}), MARKER_VERSION},
+        {"release", WithOp(Release{}), MARKER_VERSION},
+        {"reserve", WithOp(Reserve{uint256{7}}, {}, {0}), MARKER_VERSION},
+        {"register", WithOp(Register{HashName("core"), uint256{2}, full}, {0}), MARKER_VERSION},
+        {"register with records", WithOp(Register{HashName("core"), uint256{2}, with_records}, {0}), MARKER_VERSION_EXTENDED},
+        {"register with its text", WithOp(reg_text, {0}), MARKER_VERSION_EXTENDED},
+        {"update", WithOp(UpdateName{all_kinds}, {0}), MARKER_VERSION},
+        {"update of the records", WithOp(UpdateName{records_set}, {0}), MARKER_VERSION_EXTENDED},
+        {"records deleted", WithOp(UpdateName{records_deleted}, {0}), MARKER_VERSION_EXTENDED},
+        {"icann", WithOp(IcannNames{{"example.com", "bitcoin"}, std::vector<unsigned char>(64, 9)}), MARKER_VERSION},
+        {"subname", WithOp(RegisterSubname{"blog", full}, {0, 1}), MARKER_VERSION},
+        {"subname with records", WithOp(RegisterSubname{"blog", with_records}, {0, 1}), MARKER_VERSION_EXTENDED},
+    };
+    for (auto [what, marker, version] : cases) {
+        if (what == "no operation") marker.operation.reset();
+        marker.memos = {{5, {1, 2, 3}}};
+        const CScript script{MarkerScript(marker)};
+        BOOST_CHECK_MESSAGE(PushedBytes(script).at(sizeof(TAG)) == version, what);
+        const auto read{ParseMarkerScript(script)};
+        BOOST_REQUIRE_MESSAGE(read, what);
+        BOOST_CHECK_MESSAGE(*read == marker, what);
+        // Anything changed is another marker.
+        Marker other{marker};
+        other.memos.clear();
+        BOOST_CHECK_MESSAGE(!(*read == other), what);
+    }
+    // The subname's records are read back as written.
+    const auto sub{ParseMarkerScript(MarkerScript(WithOp(RegisterSubname{"blog", with_records}, {0, 1})))};
+    BOOST_REQUIRE(sub);
+    BOOST_CHECK(std::get<RegisterSubname>(*sub->operation).data.records == with_records.records);
+    BOOST_CHECK(std::get<RegisterSubname>(*sub->operation).data == with_records);
+    // Values compare by every field.
+    BOOST_CHECK((SocketV4{{1, 2, 3, 4}, 5} == SocketV4{{1, 2, 3, 4}, 5}));
+    BOOST_CHECK(!(SocketV6{{}, 1} == SocketV6{{}, 2}));
+    BOOST_CHECK(!(Token{Token::Kind::NAME, uint256{1}, {}} == Token{Token::Kind::RESERVATION, uint256{1}, {}}));
+    BOOST_CHECK((Stamped<CAmount>{5, Txid{}, 3} == Stamped<CAmount>{5, Txid{}, 3}));
+    BOOST_CHECK(!(ReservationRecord{uint256{1}, 2} == ReservationRecord{uint256{1}, 3}));
+    // A token of an unknown kind is no token.
+    DataStream bad_token{};
+    bad_token << uint8_t{2} << uint256{} << uint256{};
+    Token token;
+    BOOST_CHECK_THROW(bad_token >> token, std::ios_base::failure);
+}
+
+BOOST_AUTO_TEST_CASE(marker_rejects)
+{
+    // One transaction per reason a marker is refused, each with that very reason. These depend on the
+    // transaction alone (CheckMarker), and the state's check starts with them.
+    CKey key;
+    key.MakeNewKey(true);
+    const NameHash core{HashName("core")};
+    const auto reg{[&](NameData data, std::optional<std::string> text = std::nullopt) {
+        Register r{core, uint256{1}, std::move(data), std::nullopt};
+        r.text = std::move(text);
+        return WithMarker(WithOp(r, {0}), 1);
+    }};
+    const auto update{[&](NameUpdates updates) { return WithMarker(WithOp(UpdateName{std::move(updates)}, {0}), 1); }};
+    const auto subname{[&](std::string label, NameData data = {}) { return WithMarker(WithOp(RegisterSubname{std::move(label), std::move(data)}, {0, 1}), 2); }};
+    const auto icann{[&](std::vector<std::string> names, size_t signature = 64) {
+        return WithMarker(WithOp(IcannNames{std::move(names), std::vector<unsigned char>(signature, 1)}), 0);
+    }};
+    const auto memos{[&](std::vector<std::pair<uint32_t, std::vector<unsigned char>>> list) {
+        Marker marker;
+        marker.memos = std::move(list);
+        return WithMarker(marker, 0, 3); // the marker is output 0
+    }};
+    const auto data_with{[](auto set) {
+        NameData data;
+        set(data);
+        return data;
+    }};
+    const auto updates_with{[](auto set) {
+        NameUpdates updates;
+        set(updates);
+        return updates;
+    }};
+    const std::vector<unsigned char> empty_lists{0, 0, 0};
+    const auto body{[](std::initializer_list<std::vector<unsigned char>> parts) {
+        std::vector<unsigned char> out;
+        for (const auto& part : parts) out.insert(out.end(), part.begin(), part.end());
+        return out;
+    }};
+
+    std::vector<RejectCase> cases;
+    // Markers that are no markers: there is one way to write each.
+    {
+        CMutableTransaction two{Tx({}, 1, 0, std::nullopt, 1)};
+        two.vout.emplace_back(0, MarkerScript(Marker{}));
+        cases.push_back({"two markers", two, "bad-bn-markers"});
+        // The same bytes, pushed with OP_PUSHDATA1.
+        std::vector<unsigned char> data{std::begin(TAG), std::end(TAG)};
+        data.insert(data.end(), {MARKER_VERSION, 0, 0, 0, 0});
+        CScript padded;
+        padded << OP_RETURN;
+        padded.insert(padded.end(), OP_PUSHDATA1);
+        padded.insert(padded.end(), static_cast<unsigned char>(data.size()));
+        padded.insert(padded.end(), data.begin(), data.end());
+        BOOST_CHECK(IsMarkerScript(padded));
+        cases.push_back({"a push that is not the shortest", WithMarker(padded, 0), "bad-bn-marker"});
+        CScript longer{MarkerScript(Marker{})};
+        longer << OP_TRUE;
+        cases.push_back({"more after the push", WithMarker(longer, 0), "bad-bn-marker"});
+        cases.push_back({"unknown version", WithMarker(RawMarker(body({{2, 0}, empty_lists})), 0), "bad-bn-marker"});
+        cases.push_back({"unknown operation", WithMarker(RawMarker(body({{MARKER_VERSION, 7}, empty_lists})), 0), "bad-bn-marker"});
+        cases.push_back({"extended, without an operation", WithMarker(RawMarker(body({{MARKER_VERSION_EXTENDED, 0}, empty_lists})), 0), "bad-bn-marker"});
+        std::vector<unsigned char> reserve{MARKER_VERSION_EXTENDED, Reserve::KIND};
+        reserve.resize(2 + 32, 5);
+        cases.push_back({"extended reservation", WithMarker(RawMarker(body({reserve, {0, 1, 0, 0, 0, 0, 0}})), 1), "bad-bn-marker"});
+        cases.push_back({"extended release", WithMarker(RawMarker(body({{MARKER_VERSION_EXTENDED, Release::KIND}, empty_lists})), 0), "bad-bn-marker"});
+        cases.push_back({"extended icann", WithMarker(RawMarker(body({{MARKER_VERSION_EXTENDED, IcannNames::KIND, 0, 0}, empty_lists})), 0), "bad-bn-marker"});
+        cases.push_back({"cut short", WithMarker(RawMarker({MARKER_VERSION, Reserve::KIND, 1, 2, 3}), 0), "bad-bn-marker"});
+        cases.push_back({"bytes left over", WithMarker(RawMarker(body({{MARKER_VERSION, 0}, empty_lists, {9}})), 0), "bad-bn-marker"});
+        // An update of a field of a kind that is none (3: neither delete, retain nor set).
+        cases.push_back({"unknown kind of update", WithMarker(RawMarker(body({{MARKER_VERSION, UpdateName::KIND, 3, 1, 1, 1, 1, 1}, empty_lists})), 0), "bad-bn-marker"});
+        BOOST_CHECK(!ParseMarkerScript(RawMarker({MARKER_VERSION})));
+        BOOST_CHECK(!IsMarkerScript(CScript() << OP_RETURN << std::vector<unsigned char>{TAG[0], TAG[1], TAG[2]}));
+    }
+    // Where it is, and what it lists.
+    {
+        CMutableTransaction coinbase;
+        coinbase.vin.emplace_back();
+        coinbase.vout.emplace_back(0, MarkerScript(Marker{}));
+        BOOST_REQUIRE(CTransaction{coinbase}.IsCoinBase());
+        cases.push_back({"in a coinbase", coinbase, "bad-bn-coinbase"});
+        CMutableTransaction valued{WithMarker(Marker{}, 0)};
+        valued.vout[0].nValue = 1;
+        cases.push_back({"a marker with value", valued, "bad-bn-marker-value"});
+        Marker marker;
+        marker.name_outputs = {9};
+        cases.push_back({"an output there is not", WithMarker(marker, 1), "bad-bn-outputs"});
+        marker.name_outputs = {1, 0};
+        cases.push_back({"outputs not in order", WithMarker(marker, 2), "bad-bn-outputs"});
+        marker.name_outputs = {0, 0};
+        cases.push_back({"an output twice", WithMarker(marker, 1), "bad-bn-outputs"});
+        marker.name_outputs = {0};
+        marker.reservation_outputs = {9};
+        cases.push_back({"a reservation output there is not", WithMarker(marker, 1), "bad-bn-outputs"});
+        marker.reservation_outputs = {0};
+        cases.push_back({"a name and a reservation on one output", WithMarker(marker, 1), "bad-bn-outputs"});
+        marker.name_outputs.clear();
+        marker.reservation_outputs.clear();
+        for (uint32_t i{0}; i <= MAX_TOKEN_OUTPUTS; ++i) marker.name_outputs.push_back(i);
+        cases.push_back({"too many outputs", WithMarker(marker, MAX_TOKEN_OUTPUTS + 1), "bad-bn-outputs"});
+        marker.name_outputs = {1};
+        cases.push_back({"the marker carries a name", WithMarker(marker, 1), "bad-bn-outputs"});
+        marker.name_outputs = {0};
+        CMutableTransaction anyone{WithMarker(marker, 1)};
+        anyone.vout[0].scriptPubKey = CScript() << OP_TRUE;
+        cases.push_back({"a name to a script that is not standard", anyone, "bad-bn-token-output"});
+        CMutableTransaction pubkey{WithMarker(marker, 1)};
+        pubkey.vout[0].scriptPubKey = GetScriptForRawPubKey(key.GetPubKey());
+        cases.push_back({"a name to a bare public key", pubkey, "bad-bn-token-output"});
+        CMutableTransaction worth{WithMarker(marker, 1)};
+        worth.vout[0].nValue = 546;
+        cases.push_back({"a name output with value", worth, "bad-bn-token-output"});
+    }
+    // Memos: in order, by outputs that are not the marker, neither empty nor too large.
+    cases.push_back({"a memo to an output there is not", memos({{4, {1}}}), "bad-bn-memo"});
+    cases.push_back({"a memo to the marker", memos({{0, {1}}}), "bad-bn-memo"});
+    cases.push_back({"memos not in order", memos({{2, {1}}, {1, {1}}}), "bad-bn-memo"});
+    cases.push_back({"two memos to one output", memos({{1, {1}}, {1, {2}}}), "bad-bn-memo"});
+    cases.push_back({"an empty memo", memos({{1, {}}}), "bad-bn-memo"});
+    cases.push_back({"a memo too large", memos({{1, std::vector<unsigned char>(MAX_MEMO_SIZE + 1, 1)}}), "bad-bn-memo"});
+    // The data of a name.
+    cases.push_back({"records that are no JSON", reg(data_with([](NameData& d) { d.records = "{"; })), "bad-bn-data"});
+    cases.push_back({"records that are no object", reg(data_with([](NameData& d) { d.records = "[1]"; })), "bad-bn-data"});
+    cases.push_back({"records too large", reg(data_with([](NameData& d) { d.records = R"({"txt":")" + std::string(MAX_RECORDS_SIZE, 'a') + R"("})"; })), "bad-bn-data"});
+    cases.push_back({"a negative paymail fee", reg(data_with([](NameData& d) { d.paymail_fee = -1; })), "bad-bn-data"});
+    cases.push_back({"a paymail fee beyond all money", reg(data_with([](NameData& d) { d.paymail_fee = MAX_MONEY + 1; })), "bad-bn-data"});
+    cases.push_back({"an encryption key that is no key", reg(data_with([](NameData& d) { d.encryption_key = EncryptionKey{0x05, 1}; })), "bad-bn-data"});
+    cases.push_back({"a signing key that is no key", reg(data_with([](NameData& d) { d.signing_key = uint256::FromHex(std::string(64, 'f')).value(); })), "bad-bn-data"});
+    cases.push_back({"an update to records that are no object", update(updates_with([](NameUpdates& u) { u.records = {UpdateKind::SET, std::string{"7"}}; })), "bad-bn-data"});
+    cases.push_back({"an update to a negative fee", update(updates_with([](NameUpdates& u) { u.paymail_fee = {UpdateKind::SET, -5}; })), "bad-bn-data"});
+    cases.push_back({"an update to a key that is no key", update(updates_with([](NameUpdates& u) { u.encryption_key = {UpdateKind::SET, EncryptionKey{}}; })), "bad-bn-data"});
+    cases.push_back({"a subname with records that are no object", subname("blog", data_with([](NameData& d) { d.records = "\"x\""; })), "bad-bn-data"});
+    // The text of a name, published: the name's, neither empty nor too long.
+    cases.push_back({"an empty text", reg({}, ""), "bad-bn-name-text"});
+    cases.push_back({"a text too long", reg({}, std::string(MAX_NAME_TEXT_SIZE + 1, 'a')), "bad-bn-name-text"});
+    cases.push_back({"the text of another name", reg({}, "other"), "bad-bn-name-text"});
+    // The label of a subname: a DNS label.
+    cases.push_back({"a label in upper case", subname("Blog"), "bad-bn-label"});
+    cases.push_back({"an empty label", subname(""), "bad-bn-label"});
+    cases.push_back({"a label that starts with a hyphen", subname("-blog"), "bad-bn-label"});
+    cases.push_back({"a label too long", subname(std::string(64, 'a')), "bad-bn-label"});
+    cases.push_back({"a label with a dot", subname("a.b"), "bad-bn-label"});
+    // ICANN statements.
+    cases.push_back({"no ICANN names", icann({}), "bad-bn-icann-names"});
+    cases.push_back({"too many ICANN names", icann(std::vector<std::string>(MAX_ICANN_NAMES + 1, "a")), "bad-bn-icann-names"});
+    cases.push_back({"an ICANN name that is none", icann({"Example.com"}), "bad-bn-icann-names"});
+    cases.push_back({"an ICANN name twice", icann({"example.com", "example.com"}), "bad-bn-icann-names"});
+    cases.push_back({"an ICANN signature of the wrong size", icann({"example.com"}, 63), "bad-bn-icann-signature"});
+
+    Consensus::BitNamesParams params;
+    TState state;
+    for (const RejectCase& c : cases) {
+        std::string reason;
+        BOOST_CHECK_MESSAGE(!CheckMarker(CTransaction{c.tx}, reason), c.what);
+        BOOST_CHECK_MESSAGE(reason == c.reason, c.what + ": " + reason + ", not " + c.reason);
+        // The state refuses it for the same reason, and changes nothing.
+        reason.clear();
+        TUndo undo;
+        BOOST_CHECK_MESSAGE(!state.ApplyTx(CTransaction{c.tx}, 1, params, undo, reason), c.what);
+        BOOST_CHECK_MESSAGE(reason == c.reason, c.what + ": " + reason + ", not " + c.reason);
+        BOOST_CHECK_MESSAGE(state == TState{}, c.what);
+        // What the outputs carry is known only of a marker that can be read.
+        if (c.reason == "bad-bn-markers" || c.reason == "bad-bn-marker") BOOST_CHECK_MESSAGE(TokenOutputs(CTransaction{c.tx}).empty(), c.what);
+    }
+    // A well formed one of each kind passes the same check.
+    std::string reason;
+    BOOST_CHECK_MESSAGE(CheckMarker(CTransaction{memos({{1, {1}}, {2, std::vector<unsigned char>(MAX_MEMO_SIZE, 1)}})}, reason), reason);
+    BOOST_CHECK_MESSAGE(CheckMarker(CTransaction{reg(data_with([](NameData& d) { d.records = R"({"txt":"hi"})"; d.paymail_fee = MAX_MONEY; }), "core")}, reason), reason);
+    BOOST_CHECK_MESSAGE(CheckMarker(CTransaction{subname(std::string(63, 'a'))}, reason), reason);
+    BOOST_CHECK_MESSAGE(CheckMarker(CTransaction{icann(std::vector<std::string>(1, "example.com"))}, reason), reason);
+    BOOST_CHECK(TokenOutputs(CTransaction{subname("blog")}) == (std::set<uint32_t>{0, 1}));
+}
+
+BOOST_AUTO_TEST_CASE(state_rejects)
+{
+    // One transaction per reason the state refuses a well formed one, each with that very reason.
+    Consensus::BitNamesParams params;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    const COutPoint core{Registered(state, "core", {}, 10, params)};
+    const COutPoint other{Registered(state, "other", {}, 20, params)};
+    const CMutableTransaction reserve{Reservation(HashName("free"), uint256{3}, 30)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 3, params, undo, reason));
+    const COutPoint reservation{reserve.GetHash(), 0};
+    const Register free{HashName("free"), uint256{3}, {}};
+    // A name output the rules never made: a token of a name that has no record.
+    const COutPoint ghost{Txid::FromUint256(uint256{66}), 0};
+    TState corrupt{state};
+    corrupt.PutToken(ghost, Token{Token::Kind::NAME, HashName("ghost"), {}});
+
+    const std::vector<std::tuple<std::string, const TState*, CMutableTransaction, std::string>> cases{
+        {"a reservation that also makes a name output", &state, Tx({}, 1, 1, Reserve{uint256{1}}, 40), "bad-bn-unbalanced"},
+        {"a reservation without its output", &state, Tx({}, 0, 0, Reserve{uint256{1}}, 41), "bad-bn-unbalanced"},
+        {"a registration that keeps the reservation", &state, Tx({reservation}, 1, 1, free, 42), "bad-bn-unbalanced"},
+        {"a registration without the name output", &state, Tx({reservation}, 0, 0, free, 43), "bad-bn-unbalanced"},
+        {"a registration of a taken name", &state, Tx({reservation}, 1, 0, Register{HashName("core"), uint256{3}, {}}, 44), "bad-bn-name-taken"},
+        {"an update without a name", &state, Tx({}, 1, 0, UpdateName{}, 45), "bad-bn-no-name"},
+        {"an update that makes a name output more", &state, Tx({core}, 2, 0, UpdateName{}, 46), "bad-bn-unbalanced"},
+        {"an update that drops a reservation", &state, Tx({core, reservation}, 1, 0, UpdateName{}, 47), "bad-bn-unbalanced"},
+        {"a subname without a name", &state, Tx({}, 1, 0, RegisterSubname{"blog", {}}, 48), "bad-bn-no-name"},
+        {"a subname without its output", &state, Tx({core}, 1, 0, RegisterSubname{"blog", {}}, 49), "bad-bn-unbalanced"},
+        {"a subname that drops a reservation", &state, Tx({core, reservation}, 2, 0, RegisterSubname{"blog", {}}, 50), "bad-bn-unbalanced"},
+        {"a release of nothing", &state, Tx({core}, 1, 0, Release{}, 51), "bad-bn-unbalanced"},
+        {"a release that makes a name output", &state, Tx({}, 1, 0, Release{}, 52), "bad-bn-unbalanced"},
+        {"a release that makes a reservation output", &state, Tx({core}, 0, 1, Release{}, 53), "bad-bn-unbalanced"},
+        {"moving a name to two outputs", &state, Tx({core}, 2, 0, std::nullopt, 54), "bad-bn-unbalanced"},
+        {"moving a reservation and dropping a name", &state, Tx({core, reservation}, 0, 1, std::nullopt, 55), "bad-bn-unbalanced"},
+        {"an icann statement that makes an output", &state, Tx({}, 1, 0, IcannNames{{"core"}, std::vector<unsigned char>(64, 1)}, 56), "bad-bn-unbalanced"},
+        {"an icann statement without an authority", &state, Tx({}, 0, 0, IcannNames{{"core"}, std::vector<unsigned char>(64, 1)}, 57), "bad-bn-icann-disabled"},
+        // Defensive: a name output whose name has no record cannot come of transactions (a released
+        // name's outputs are spent with it), only of a store written otherwise.
+        {"an update of a name with no record", &corrupt, Tx({ghost}, 1, 0, UpdateName{}, 60), "bad-bn-name-unknown"},
+        {"a release of a name with no record", &corrupt, Tx({other, ghost}, 1, 0, Release{}, 61), "bad-bn-name-unknown"},
+        {"a subname of a name with no record", &corrupt, Tx({ghost}, 2, 0, RegisterSubname{"blog", {}}, 62), "bad-bn-name-unknown"},
+    };
+    for (const auto& [what, at, tx, expected] : cases) {
+        BOOST_CHECK_MESSAGE(CheckMarker(CTransaction{tx}, reason), what + ": " + reason);
+        BOOST_CHECK_MESSAGE(!at->CheckTx(CTransaction{tx}, 4, params, reason), what);
+        BOOST_CHECK_MESSAGE(reason == expected, what + ": " + reason + ", not " + expected);
+        // Applied, it changes nothing.
+        TState copy{*at};
+        TUndo none;
+        BOOST_CHECK_MESSAGE(!copy.ApplyTx(CTransaction{tx}, 4, params, none, reason), what);
+        BOOST_CHECK_MESSAGE(reason == expected, what);
+        BOOST_CHECK_MESSAGE(copy == *at, what);
+    }
+    // Those spend the name that has no record last; spent first and carried on, it only moves.
+    BOOST_CHECK_MESSAGE(corrupt.CheckTx(CTransaction{Tx({ghost}, 1, 0, std::nullopt, 63)}, 4, params, reason), reason);
+}
+
+BOOST_AUTO_TEST_CASE(icann_rejects)
+{
+    Consensus::BitNamesParams params;
+    CKey authority, stranger;
+    authority.MakeNewKey(true);
+    stranger.MakeNewKey(true);
+    params.icann_authority = uint256{XOnlyPubKey{authority.GetPubKey()}};
+    TState state;
+    std::string reason;
+    Registered(state, "example.com", {}, 10, params);
+    Registered(state, "bitcoin", {}, 20, params);
+    // A statement of `names`, signed by `key` for the first input of the transaction.
+    const auto statement{[&](const std::vector<std::string>& names, const CKey& key, uint8_t salt, size_t name_outputs = 0) {
+        IcannNames op{names, std::vector<unsigned char>(64)};
+        const CMutableTransaction unsigned_tx{Tx({}, name_outputs, 0, op, salt)};
+        BOOST_REQUIRE(key.SignSchnorr(IcannMessage(names, unsigned_tx.vin[0].prevout), op.signature, nullptr, uint256{}));
+        return Tx({}, name_outputs, 0, op, salt);
+    }};
+    const auto refused{[&](const CMutableTransaction& tx, const std::string& expected) {
+        BOOST_CHECK(!state.CheckTx(CTransaction{tx}, 3, params, reason));
+        BOOST_CHECK_EQUAL(reason, expected);
+    }};
+    refused(statement({"example.com"}, stranger, 1), "bad-bn-icann-signature");
+    IcannNames zero{{"example.com"}, std::vector<unsigned char>(64, 0)};
+    refused(Tx({}, 0, 0, zero, 2), "bad-bn-icann-signature");
+    // Signed for another first input: not to be replayed.
+    CMutableTransaction replayed{statement({"example.com"}, authority, 3)};
+    replayed.vin[0].prevout.n = 8;
+    refused(replayed, "bad-bn-icann-signature");
+    refused(statement({"example.com", "nobody.com"}, authority, 4), "bad-bn-icann-unknown");
+    refused(statement({"example.com"}, authority, 5, 1), "bad-bn-unbalanced");
+    // Marked once; once only.
+    const TState before{state};
+    TUndo block;
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{statement({"example.com", "bitcoin"}, authority, 6)}, 3, params, block, reason), reason);
+    BOOST_CHECK(state.Names().at(HashName("bitcoin")).icann);
+    BOOST_CHECK_EQUAL(state.Names().at(HashName("example.com")).icann_name, "example.com");
+    refused(statement({"example.com"}, authority, 7), "bad-bn-icann-already");
+    state.Revert(block);
+    BOOST_CHECK(state == before);
+}
+
+BOOST_AUTO_TEST_CASE(release_limits)
+{
+    // The mempool's bound on what one transaction releases (policy) counts the names it releases
+    // itself, and a squat a subname replaces with whatever is under it.
+    Consensus::BitNamesParams params;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    const COutPoint a{Registered(state, "a", {}, 10, params)};
+    const COutPoint b{Registered(state, "b", {}, 20, params)};
+    const CTransaction both{Tx({a, b}, 0, 0, Release{}, 30)};
+    BOOST_CHECK(!state.CheckTx(both, 3, params, reason, 1));
+    BOOST_CHECK_EQUAL(reason, "bn-release-too-large");
+    BOOST_CHECK_MESSAGE(state.CheckTx(both, 3, params, reason, 2), reason);
+
+    // A squat of core's subname www, with a subname of its own.
+    const COutPoint core{Registered(state, "core", {}, 40, params)};
+    const NameHash www{SubnameHash(HashName("core"), "www")};
+    const CMutableTransaction reserve{Reservation(www, uint256{9}, 50)};
+    BOOST_REQUIRE(state.ApplyTx(CTransaction{reserve}, 3, params, undo, reason));
+    const CMutableTransaction squat{Tx({COutPoint{reserve.GetHash(), 0}}, 1, 0, Register{www, uint256{9}, {}}, 51)};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{squat}, 4, params, undo, reason), reason);
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({COutPoint{squat.GetHash(), 0}}, 2, 0, RegisterSubname{"under", {}}, 52)}, 4, params, undo, reason), reason);
+    const CTransaction made{Tx({core}, 2, 0, RegisterSubname{"www", {}}, 53)};
+    BOOST_CHECK(!state.CheckTx(made, 5, params, reason, 1));
+    BOOST_CHECK_EQUAL(reason, "bn-release-too-large");
+    BOOST_CHECK_MESSAGE(state.CheckTx(made, 5, params, reason, 2), reason);
+    // A block has no such bound.
+    TState applied{state};
+    BOOST_REQUIRE_MESSAGE(applied.ApplyTx(made, 5, params, undo, reason), reason);
+    BOOST_CHECK(applied.Names().at(www).parent == HashName("core"));
+    BOOST_CHECK(!applied.Names().contains(SubnameHash(www, "under")));
+    // The index of names by parent.
+    BOOST_CHECK(applied.View().ChildrenOf(HashName("core")) == std::vector<NameHash>{www});
+    BOOST_CHECK(applied.View().ChildrenOf(www).empty());
+    BOOST_CHECK_EQUAL(state.View().ChildrenOf(www).size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(dns_record_types)
+{
+    BOOST_CHECK_EQUAL(dns::TypeName(99), "TYPE99");
+    BOOST_CHECK(dns::ParseType("aaaa") == dns::AAAA);
+    BOOST_CHECK(dns::ParseType("tlsa") == dns::TLSA);
+    BOOST_CHECK(!dns::ParseType("SPF"));
+
+    Consensus::BitNamesParams params;
+    TState state;
+    NameData core;
+    core.ipv6 = SocketV6{{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9}, 443};
+    const std::string long_text(300, 't');
+    core.records = strprintf(R"({"ns": ["ns1", "ns.other.org."], "txt": ["", "%s", 5], "mx": "mail.example.com.",
+                                 "map": {"plain": "198.51.100.3", "odd": 5, "v6": {"ip6": ["2001:db8::1", "198.51.100.1", 7]}}})", long_text);
+    Registered(state, "core", core, 10, params);
+    // The address of the name's data, where its records have none.
+    BOOST_CHECK((Texts(Resolve(state, "core.x", dns::AAAA)) == std::vector<std::string>{"AAAA 2001:db8::9"}));
+    BOOST_CHECK((Texts(Resolve(state, "core.x", dns::NS)) == std::vector<std::string>{"NS ns1.core.x.", "NS ns.other.org."}));
+    BOOST_CHECK((Texts(Resolve(state, "core.x", dns::MX)) == std::vector<std::string>{"MX 10 mail.example.com."}));
+    // Text: in strings of at most 255 bytes, each after its length.
+    const dns::Answer txt{Resolve(state, "core.x", dns::TXT)};
+    BOOST_REQUIRE_EQUAL(txt.records.size(), 2U);
+    BOOST_CHECK(txt.records[0].rdata == std::vector<unsigned char>{0});
+    BOOST_CHECK_EQUAL(txt.records[0].text, "\"\"");
+    BOOST_REQUIRE_EQUAL(txt.records[1].rdata.size(), 1 + 255 + 1 + 45U);
+    BOOST_CHECK_EQUAL(txt.records[1].rdata[0], 255);
+    BOOST_CHECK_EQUAL(txt.records[1].rdata[256], 45);
+    BOOST_CHECK_EQUAL(txt.records[1].text, "\"" + long_text + "\"");
+    // A host of the map given as an address alone, one given as something else, and only what is of the type asked for.
+    BOOST_CHECK((Texts(Resolve(state, "plain.core.x", dns::A)) == std::vector<std::string>{"A 198.51.100.3"}));
+    const dns::Answer odd{Resolve(state, "odd.core.x", dns::ANY)};
+    BOOST_CHECK_EQUAL(odd.rcode, dns::NOERROR);
+    BOOST_CHECK(odd.records.empty());
+    BOOST_CHECK((Texts(Resolve(state, "v6.core.x", dns::AAAA)) == std::vector<std::string>{"AAAA 2001:db8::1"}));
+    BOOST_CHECK_EQUAL(Resolve(state, "x", dns::A).rcode, dns::NOERROR);
+    // Every type at once.
+    BOOST_CHECK_EQUAL(Resolve(state, "core.x", dns::ANY).records.size(), 1U + 2U + 2U + 1U);
+
+    // On the wire, an answer for a name other than the question's is written out in full.
+    const std::vector<unsigned char> query{0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 4, 'c', 'o', 'r', 'e', 1, 'x', 0, 0, 1, 0, 1};
+    const auto response{DnsRespond(query, [](const std::string&, uint16_t) {
+        dns::Answer answer;
+        answer.records.push_back({"ab.x", dns::A, {1, 2, 3, 4}, ""});
+        return answer;
+    })};
+    BOOST_CHECK_EQUAL(response[7], 1);
+    BOOST_CHECK((std::vector<unsigned char>(response.begin() + query.size(), response.begin() + query.size() + 6) == std::vector<unsigned char>{2, 'a', 'b', 1, 'x', 0}));
+    // What is no question: too short, a response, another opcode, two questions, a name cut short, another class.
+    BOOST_CHECK(DnsRespond({1, 2, 3}, {}).empty());
+    auto response_flag{query};
+    response_flag[2] |= 0x80;
+    BOOST_CHECK(DnsRespond(response_flag, {}).empty());
+    auto notify{query};
+    notify[2] = 0x20; // opcode 4
+    BOOST_CHECK_EQUAL(DnsRespond(notify, {})[3] & 0x0f, dns::NOTIMP);
+    auto two{query};
+    two[5] = 2;
+    BOOST_CHECK_EQUAL(DnsRespond(two, {})[3] & 0x0f, dns::FORMERR);
+    const std::vector<unsigned char> cut(query.begin(), query.begin() + 16);
+    BOOST_CHECK_EQUAL(DnsRespond(cut, {})[3] & 0x0f, dns::FORMERR);
+    auto chaos{query};
+    chaos.back() = 3;
+    BOOST_CHECK_EQUAL(DnsRespond(chaos, {})[3] & 0x0f, dns::REFUSED);
+}
+
+BOOST_AUTO_TEST_CASE(dns_reads_bounded_on_the_way_down)
+{
+    // The reads of an answer are counted on the way down the labels too: a host of the map that
+    // delegates, at each level, to a deep subname costs a dozen reads a label, and the answer stops
+    // at MAX_DNS_READS with SERVFAIL, before the bound on delegations is reached.
+    Consensus::BitNamesParams params;
+    TState state;
+    std::string reason;
+    TUndo undo;
+    COutPoint at{Registered(state, "deep", {}, 10, params)};
+    std::string path{"deep"};
+    for (uint32_t depth{1}; depth <= MAX_SUBNAME_DEPTH; ++depth) {
+        RegisterSubname sub{"l", {}};
+        const CMutableTransaction tx{Tx({at}, 2, 0, sub, static_cast<uint8_t>(40 + depth))};
+        BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, 3, params, undo, reason), reason);
+        at = COutPoint{tx.GetHash(), 1};
+        path = "l." + path;
+    }
+    // The deepest subname: any host under it delegates back to it.
+    NameUpdates updates;
+    updates.records = {UpdateKind::SET, strprintf(R"({"map": {"*": {"delegate": "%s"}}})", path)};
+    BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({at}, 1, 0, UpdateName{updates}, 60)}, 4, params, undo, reason), reason);
+    NameData start;
+    start.records = strprintf(R"({"delegate": "%s"})", path);
+    Registered(state, "start", start, 70, params);
+    // 1 read for the name, 11 for the delegation (a read per label of the path, one for an ICANN name
+    // of that text, one for the deepest subname), then 12 a label: 48 after three labels.
+    BOOST_CHECK_EQUAL(Resolve(state, "q.q.q.start.x", dns::A).rcode, dns::NOERROR);
+    BOOST_CHECK_EQUAL(Resolve(state, "q.q.q.q.start.x", dns::A).rcode, dns::SERVFAIL);
 }
 
 BOOST_AUTO_TEST_CASE(record_rows)
