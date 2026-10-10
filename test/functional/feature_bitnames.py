@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import socket
 import struct
+import time
 
 from feature_sidechain import ACTIVATION_PERIOD, SLOT, SidechainTest
 from test_framework.util import assert_equal, assert_raises_rpc_error, p2p_port
@@ -234,6 +235,15 @@ class BitNamesTest(SidechainTest):
         side.sendrawtransaction(side.signrawtransactionwithwallet(funded)["hex"])
         self.mine_txs()
         assert_equal([m.get("message") for m in other.listpaymail()], ["a paid message"])
+        # Mail is listed newest first: a later message, received after the first, comes before it.
+        other.setmocktime(int(time.time()) + 5)
+        later = side.sendpaymail("nakamoto", Decimal("0.03"), "a later message")
+        self.mine_txs()
+        other.setmocktime(0)
+        mail = other.listpaymail()
+        assert_equal([m["message"] for m in mail], ["a later message", "a paid message"])
+        assert_equal([m["amount"] for m in mail], [Decimal("0.03"), Decimal("0.02")])
+        assert_equal(mail[0]["txid"], later)
 
         self.log.info("DNS records, and the DNS server for .x")
         records = {"ip6": "2001:db8::7", "txt": "satoshi was here", "map": {"www": {"alias": "@"}, "*": {"ip": "198.51.100.9"}, "shop": {"delegate": "nakamoto"}}}
