@@ -4,6 +4,8 @@
 
 #include <qt/bitnamespage.h>
 
+#include <bitnames/rpcutil.h>
+
 #include <qt/clientmodel.h>
 #include <qt/itemviews.h>
 
@@ -719,11 +721,18 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
                                  "subname updates it, gives it on or makes subnames of it."), panel));
     }
 
-    // Where it points: the DNS records, to edit in place.
+    // Where it points: the DNS records, to edit in place, unless rows cannot hold them all: saving the
+    // rows would then change records the page does not show, so they are left as they are.
+    const bool rows_keep{bitnames::RowsKeepRecords(data.exists("records") ? data["records"].write() : std::string{})};
+    const bool edit_records{editable && rows_keep};
     layout->addWidget(Heading(tr("Where it points"), panel));
-    layout->addWidget(Dim(editable ? tr("Host @ is %1.x itself; www is www.%1.x; * is anything under it. A value without a final dot is under %1.x.").arg(shown)
+    if (editable && !rows_keep) {
+        layout->addWidget(Dim(tr("These records hold more than this table can show, so the page does not change them: "
+                                 "change them with setnamerecords or updatename."), panel));
+    }
+    layout->addWidget(Dim(edit_records ? tr("Host @ is %1.x itself; www is www.%1.x; * is anything under it. A value without a final dot is under %1.x.").arg(shown)
                                    : tr("What %1.x and the hosts under it answer.").arg(shown), panel));
-    auto* records{SimpleTable({tr("Host"), tr("Type"), tr("Value"), tr("Priority")}, panel, editable)};
+    auto* records{SimpleTable({tr("Host"), tr("Type"), tr("Value"), tr("Priority")}, panel, edit_records)};
     records->setMinimumHeight(160);
     records->horizontalHeader()->setStretchLastSection(false);
     records->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
@@ -733,14 +742,14 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
     if (const auto rows{call("getnamerecords", Args({handle.toStdString()}), false, true)}) {
         for (const UniValue& r : rows->getValues()) {
             const auto number{[&](const char* key) { return r.exists(key) && r[key].isNum() ? QVariant{qlonglong(r[key].getInt<int64_t>())} : QVariant{}; }};
-            AddRecordRow(records, Text(r["host"]), Text(r["type"]), Text(r["value"]), r.exists("priority") ? Text(r["priority"]) : QString{}, editable,
+            AddRecordRow(records, Text(r["host"]), Text(r["type"]), Text(r["value"]), r.exists("priority") ? Text(r["priority"]) : QString{}, edit_records,
                          number("weight"), number("port"));
         }
     }
     // Without records, the address of the name answers: show it, so that there is one place to look.
-    if (records->rowCount() == 0 && data.exists("ipv4")) AddRecordRow(records, QStringLiteral("@"), QStringLiteral("A"), Text(data["ipv4"]).section(QLatin1Char(':'), 0, 0), {}, editable);
+    if (records->rowCount() == 0 && data.exists("ipv4")) AddRecordRow(records, QStringLiteral("@"), QStringLiteral("A"), Text(data["ipv4"]).section(QLatin1Char(':'), 0, 0), {}, edit_records);
     layout->addWidget(records);
-    if (editable) {
+    if (edit_records) {
         auto* row{new QHBoxLayout};
         auto* add{new QPushButton(tr("Add a record"), panel)};
         auto* remove{new QPushButton(tr("Remove"), panel)};

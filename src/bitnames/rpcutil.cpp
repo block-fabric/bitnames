@@ -364,6 +364,63 @@ UniValue RowsFromRecords(const std::string& records)
     return rows;
 }
 
+namespace {
+/**
+ * Records in one form, to compare: keys sorted, a value alone as a list of one, an empty list left out, a
+ * string of the map as {"ip": string}. A CNAME or a delegation stays one value, as the rows keep it.
+ */
+UniValue NormalRecords(const UniValue& node)
+{
+    if (!node.isObject()) return node;
+    std::vector<std::string> keys{node.getKeys()};
+    std::sort(keys.begin(), keys.end());
+    UniValue out(UniValue::VOBJ);
+    for (const std::string& key : keys) {
+        const UniValue& value{node[key]};
+        if (key == "map" && value.isObject()) {
+            std::vector<std::string> labels{value.getKeys()};
+            std::sort(labels.begin(), labels.end());
+            UniValue map(UniValue::VOBJ);
+            for (const std::string& label : labels) {
+                UniValue sub{value[label]};
+                if (sub.isStr()) {
+                    UniValue ip(UniValue::VOBJ);
+                    ip.pushKV("ip", sub);
+                    sub = std::move(ip);
+                }
+                map.pushKV(label, NormalRecords(sub));
+            }
+            if (!map.empty()) out.pushKV(key, std::move(map));
+        } else if (key == "alias" || key == "delegate" || key == "map") {
+            out.pushKV(key, value);
+        } else if (value.isArray()) {
+            if (!value.empty()) out.pushKV(key, value);
+        } else {
+            UniValue list(UniValue::VARR);
+            list.push_back(value);
+            out.pushKV(key, std::move(list));
+        }
+    }
+    return out;
+}
+} // namespace
+
+bool RowsKeepRecords(const std::string& records)
+{
+    if (records.empty()) return true;
+    UniValue before;
+    if (!before.read(records) || !before.isObject()) return false;
+    UniValue after;
+    try {
+        if (!after.read(RecordsFromRows(RowsFromRecords(records)))) return false;
+    } catch (const UniValue&) {
+        return false;
+    } catch (const std::exception&) {
+        return false;
+    }
+    return NormalRecords(before).write() == NormalRecords(after).write();
+}
+
 NameData ParseData(const UniValue& value)
 {
     CheckFields(value);

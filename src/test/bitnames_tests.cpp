@@ -1703,6 +1703,24 @@ BOOST_AUTO_TEST_CASE(record_rows)
     BOOST_CHECK_EQUAL(RecordsFromRows(plain), R"({"map":{"www":{"ip":"192.0.2.5"}}})");
     BOOST_CHECK(RowsFromRecords("not json").empty());
 
+    // Records the rows give back, which an editor of rows may save, and records they change, which it may not.
+    for (const char* kept : {"", "{}", R"({"ip": "192.0.2.1"})", R"({"ip": ["192.0.2.1", "192.0.2.2"], "txt": [], "map": {}})",
+                             R"({"map": {"www": "192.0.2.5", "_tcp": {"map": {"_sip": {"srv": [[10, 5, 5060, "sip."]]}}}}, "alias": "x."})",
+                             R"({"mx": [[10, "mail."]], "tls": [[3, 1, 1, "aabb"]], "ns": "ns1", "ip6": "2001:db8::7", "delegate": "core"})"}) {
+        BOOST_CHECK_MESSAGE(RowsKeepRecords(kept), kept);
+    }
+    for (const char* changed : {"not json", "[1]",
+                                R"({"map": {"a.b": {"ip": "192.0.2.1"}}})",       // nested by a save: DNS would then reach it
+                                R"({"map": {"WWW": {"ip": "192.0.2.1"}}})",       // lower-cased by a save
+                                R"({"txt": "a", "map": {"": {"txt": "b"}}})",     // merged into @ by a save
+                                R"({"ip": "192.0.2.1", "colour": "red"})",        // a key rows have no type for
+                                R"({"ip": "2001:db8::7"})",                        // an IPv6 address as an A row: no save at all
+                                R"({"srv": [[10, 5, 5060]]})",                     // a record rows leave out
+                                R"({"mx": "mail."})",                              // a priority a save adds
+                                R"({"map": {"www": {}}})"}) {
+        BOOST_CHECK_MESSAGE(!RowsKeepRecords(changed), changed);
+    }
+
     // An update deletes any field given as null, and checks every value.
     UniValue all_null(UniValue::VOBJ);
     for (const char* field : {"commitment", "ipv4", "ipv6", "encryptionkey", "signingkey", "paymailfee", "records"}) all_null.pushKV(field, UniValue{});

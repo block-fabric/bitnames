@@ -364,6 +364,36 @@ void TestPage(TestChain100Setup& test, ClientModel& client_model, WalletModel& w
         }
         QVERIFY(srv);
     }
+    // Records the rows cannot hold are shown, not edited: a save would change what the table does not show.
+    {
+        UniValue data(UniValue::VOBJ);
+        data.pushKV("records", R"({"ip": "192.0.2.7", "map": {"www": {"alias": "@"}, "a.b": {"ip": "192.0.2.8"}}})");
+        QVERIFY(Rpc(client_model, "updatename", NodeRpc::Args({"core", data}), true));
+        Mine(test);
+        Refresh(page);
+        mine->setCurrentItem(ItemStarting(mine, "shop.core"));
+        mine->setCurrentItem(ItemStarting(mine, "core"));
+        panel = mine_detail->widget();
+        records = panel->findChild<QTableWidget*>();
+        QCOMPARE(records->rowCount(), 3);
+        QVERIFY(!WithText<QPushButton>(panel, "Add a record"));
+        QVERIFY(!(records->item(0, 2)->flags() & Qt::ItemIsEditable));
+        bool told{false};
+        for (auto* label : panel->findChildren<QLabel*>()) told |= label->text().startsWith("These records hold more than this table can show");
+        QVERIFY(told);
+        const auto kept{Rpc(client_model, "getname", NodeRpc::Args({"core"}), false)};
+        QVERIFY(kept && (*kept)["data"]["records"]["map"].exists("a.b"));
+        // As they were, for what follows.
+        UniValue rows;
+        QVERIFY(rows.read(R"([{"type": "A", "value": "192.0.2.7"}, {"host": "www", "type": "CNAME", "value": "@"}])"));
+        QVERIFY(Rpc(client_model, "setnamerecords", NodeRpc::Args({"core", rows}), true));
+        Mine(test);
+        Refresh(page);
+        mine->setCurrentItem(ItemStarting(mine, "shop.core"));
+        mine->setCurrentItem(ItemStarting(mine, "core"));
+        panel = mine_detail->widget();
+        QVERIFY(WithText<QPushButton>(panel, "Add a record"));
+    }
     // A subname picked: its own panel, which says what it depends on.
     mine->setCurrentItem(ItemStarting(mine, "shop.core"));
     QCOMPARE(mine_detail->widget()->findChild<QLabel*>("nameTitle")->text(), QString("shop.core.x"));

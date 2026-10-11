@@ -64,6 +64,12 @@ bool IsNameTextForm(const std::string& text);
 std::string RecordsFromRows(const UniValue& rows);
 UniValue RowsFromRecords(const std::string& records);
 /**
+ * Whether the rows of these records give them back: RecordsFromRows(RowsFromRecords(records)) answers as
+ * they do. Records written as JSON may not (a map key with a dot or upper-case letters, keys rows have no
+ * type for, an IPv6 address under "ip"), and an editor of rows must not save them in place of the records.
+ */
+bool RowsKeepRecords(const std::string& records);
+/**
  * Refuse records that define a host a subname of the name holds: `label`, or anything under it. The
  * subname answers for them, so such records would never be seen.
  */
