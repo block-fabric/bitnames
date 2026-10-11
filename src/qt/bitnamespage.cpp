@@ -124,14 +124,24 @@ QListWidget* PickList(QWidget* parent)
     return list;
 }
 
-/** A row of the records table: host, type (a list to pick from), value, priority. */
-void AddRecordRow(QTableWidget* table, const QString& host, const QString& type, const QString& value, const QString& priority, bool editable)
+/** Where a row of the records table keeps the weight and the port of an SRV record, which it has no column for. */
+constexpr int SRV_WEIGHT_ROLE{Qt::UserRole};
+constexpr int SRV_PORT_ROLE{Qt::UserRole + 1};
+
+/**
+ * A row of the records table: host, type (a list to pick from), value, priority. The weight and port of
+ * an SRV record ride along on the value, so that saving gives them back.
+ */
+void AddRecordRow(QTableWidget* table, const QString& host, const QString& type, const QString& value, const QString& priority, bool editable,
+                  const QVariant& weight = {}, const QVariant& port = {})
 {
     const int row{table->rowCount()};
     table->insertRow(row);
     auto* host_item{new QTableWidgetItem(host)};
     auto* value_item{new QTableWidgetItem(value)};
     auto* priority_item{new QTableWidgetItem(priority)};
+    value_item->setData(SRV_WEIGHT_ROLE, weight);
+    value_item->setData(SRV_PORT_ROLE, port);
     if (editable) {
         auto* combo{new QComboBox(table)};
         combo->addItems(RECORD_TYPES);
@@ -722,7 +732,9 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
     records->setColumnWidth(3, 70);
     if (const auto rows{call("getnamerecords", Args({handle.toStdString()}), false, true)}) {
         for (const UniValue& r : rows->getValues()) {
-            AddRecordRow(records, Text(r["host"]), Text(r["type"]), Text(r["value"]), r.exists("priority") ? Text(r["priority"]) : QString{}, editable);
+            const auto number{[&](const char* key) { return r.exists(key) && r[key].isNum() ? QVariant{qlonglong(r[key].getInt<int64_t>())} : QVariant{}; }};
+            AddRecordRow(records, Text(r["host"]), Text(r["type"]), Text(r["value"]), r.exists("priority") ? Text(r["priority"]) : QString{}, editable,
+                         number("weight"), number("port"));
         }
     }
     // Without records, the address of the name answers: show it, so that there is one place to look.
@@ -758,6 +770,11 @@ void BitNamesPage::showDetail(QScrollArea* area, const QString& handle, bool edi
                 bool ok{false};
                 const int priority{cell(3).toInt(&ok)};
                 if (ok) row.pushKV("priority", priority);
+                // The weight and the port of an SRV record as they were: the table has no column for them.
+                const QTableWidgetItem* value_item{records->item(r, 2)};
+                for (const auto& [key, role] : {std::pair{"weight", SRV_WEIGHT_ROLE}, std::pair{"port", SRV_PORT_ROLE}}) {
+                    if (value_item->data(role).isValid()) row.pushKV(key, int64_t{value_item->data(role).toLongLong()});
+                }
                 rows.push_back(std::move(row));
             }
             if (call("setnamerecords", Args({handle.toStdString(), rows}), true)) say(tr("Saved: %1.x points there after the next block.").arg(shown));

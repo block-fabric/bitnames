@@ -332,6 +332,38 @@ void TestPage(TestChain100Setup& test, ClientModel& client_model, WalletModel& w
     QVERIFY(listed_blog);
     more = WithText<QPushButton>(panel, "Use new keys of this wallet")->parentWidget();
     QCOMPARE(more->findChildren<QLineEdit*>().at(2)->text(), QString("0.00100000"));
+    // An SRV record keeps its weight and port through a save of the page, which shows only its priority.
+    {
+        UniValue rows;
+        QVERIFY(rows.read(R"([{"type": "A", "value": "192.0.2.7"}, {"host": "www", "type": "CNAME", "value": "@"},
+                              {"host": "_sip._tcp", "type": "SRV", "value": "sip", "priority": 10, "weight": 5, "port": 5060}])"));
+        QVERIFY(Rpc(client_model, "setnamerecords", NodeRpc::Args({"core", rows}), true));
+        Mine(test);
+        Refresh(page);
+        mine->setCurrentItem(ItemStarting(mine, "shop.core"));
+        mine->setCurrentItem(ItemStarting(mine, "core"));
+        panel = mine_detail->widget();
+        records = panel->findChild<QTableWidget*>();
+        QCOMPARE(records->rowCount(), 3);
+        WithText<QPushButton>(panel, "Add a record")->click();
+        static_cast<QComboBox*>(records->cellWidget(3, 1))->setCurrentText("TXT");
+        records->item(3, 2)->setText("hello");
+        WithText<QPushButton>(panel, "Save")->click();
+        QCOMPARE(Status(page), QString("Saved: core.x points there after the next block."));
+        Mine(test);
+        const auto saved{Rpc(client_model, "getnamerecords", NodeRpc::Args({"core"}), false)};
+        QVERIFY(saved);
+        QCOMPARE(saved->size(), size_t{4});
+        bool srv{false};
+        for (const UniValue& r : saved->getValues()) {
+            if (r["type"].get_str() != "SRV") continue;
+            srv = true;
+            QCOMPARE(r["priority"].getInt<int>(), 10);
+            QCOMPARE(r["weight"].getInt<int>(), 5);
+            QCOMPARE(r["port"].getInt<int>(), 5060);
+        }
+        QVERIFY(srv);
+    }
     // A subname picked: its own panel, which says what it depends on.
     mine->setCurrentItem(ItemStarting(mine, "shop.core"));
     QCOMPARE(mine_detail->widget()->findChild<QLabel*>("nameTitle")->text(), QString("shop.core.x"));
