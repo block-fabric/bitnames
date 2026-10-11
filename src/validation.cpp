@@ -1630,6 +1630,20 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactionsInternal(con
         }
     }
 
+    // BitNames: the names (bn-token-unconfirmed, bn-registration-in-mempool) and refunds
+    // (sc-refund-in-mempool) are checked against the mempool as it is too, so their transactions come
+    // one at a time as well. A child that spends a name output of its parent has a parent with a marker.
+    if (txns.size() > 1 && m_active_chainstate.m_chainman.GetConsensus().sidechain.enabled) {
+        for (const CTransactionRef& tx : txns) {
+            const bool bitnames_tx{bitnames::GetMarker(*tx).has_value() ||
+                                   std::any_of(tx->vout.begin(), tx->vout.end(), [](const CTxOut& out) { return sidechain::ParseRefundScript(out.scriptPubKey).has_value(); })};
+            if (bitnames_tx) {
+                package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-drivechain-tx");
+                return PackageMempoolAcceptResult(package_state, {});
+            }
+        }
+    }
+
     std::vector<Workspace> workspaces{};
     workspaces.reserve(txns.size());
     std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces),

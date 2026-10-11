@@ -94,18 +94,33 @@ class BitNamesRejectsTest(BitNamesTest):
                 return u
         raise AssertionError("no coin left")
 
-    def make_tx(self, node, outputs, inputs=()):
-        """A transaction of the node: `inputs`, then a coin for the fee; `outputs`, then the change. Signed, not sent."""
+    def make_tx(self, node, outputs, inputs=(), fee=Decimal("0.001"), prevtxs=None):
+        """A transaction of the node: `inputs`, then a coin for the fee; `outputs`, then the change. Signed, not sent.
+        `prevtxs`: the outputs it spends that are in no block nor mempool, for signrawtransactionwithwallet."""
         tx = CTransaction()
         for txid, vout in inputs:
             tx.vin.append(CTxIn(COutPoint(int(txid, 16), vout)))
         fee_coin = self.coin(node)
         tx.vin.append(CTxIn(COutPoint(int(fee_coin["txid"], 16), fee_coin["vout"])))
         tx.vout.extend(outputs)
-        tx.vout.append(CTxOut(int((fee_coin["amount"] - Decimal("0.001")) * COIN), self.script_of(node)))
-        signed = node.signrawtransactionwithwallet(tx.serialize().hex())
+        tx.vout.append(CTxOut(int((fee_coin["amount"] - fee) * COIN), self.script_of(node)))
+        signed = node.signrawtransactionwithwallet(tx.serialize().hex(), prevtxs or [])
         assert signed["complete"], signed
         return signed["hex"]
+
+    def unused(self, node, *txs):
+        """Transactions made by make_tx that were not sent: their fee coins are for what follows."""
+        for tx in txs:
+            fee_in = node.decoderawtransaction(tx)["vin"][-1]
+            self.used.discard((fee_in["txid"], fee_in["vout"]))
+
+    def child_of(self, node, parent_hex, vout):
+        """A transaction of the node that spends output `vout` of `parent_hex`, which is not sent."""
+        parent = node.decoderawtransaction(parent_hex)
+        out = parent["vout"][vout]
+        # The value of the parent's output is the child's too: the change takes it, less a fee.
+        return self.make_tx(node, [], [(parent["txid"], vout)], fee=Decimal("0.001") - out["value"],
+                            prevtxs=[{"txid": parent["txid"], "vout": vout, "scriptPubKey": out["scriptPubKey"]["hex"], "amount": out["value"]}])
 
     def zero(self, node):
         """An output of no value to the node's wallet: one to carry a name."""
@@ -257,6 +272,30 @@ class BitNamesRejectsTest(BitNamesTest):
         side.updatename("alpha", {"ipv4": None})
         self.mine_txs()
         alpha_out = self.owner(side, "alpha")
+
+        self.log.info("Names and refunds come one at a time, not in packages: the checks of the mempool see only what is in it")
+        # A move of alpha, which pays no fee, and a child that spends its name output as a plain coin
+        # and pays for both: no block could hold the child, as bn-token-unconfirmed says of it alone.
+        script = self.script_of(side)
+        mover = self.make_tx(side, [CTxOut(0, script), self.mark(marker(NONE, names=[0]))], [alpha_out], fee=Decimal(0))
+        mover_txid = side.decoderawtransaction(mover)["txid"]
+        child = self.make_tx(side, [], [(mover_txid, 0)], fee=Decimal("0.01"),
+                             prevtxs=[{"txid": mover_txid, "vout": 0, "scriptPubKey": script.hex(), "amount": 0}])
+        assert_equal([r.get("package-error") for r in side.testmempoolaccept([mover, child])], ["package-drivechain-tx"] * 2)
+        assert_equal(side.submitpackage([mover, child])["package_msg"], "package-drivechain-tx")
+        assert mover_txid not in side.getrawmempool()
+        self.unused(side, mover, child)
+        # A refund request (whatever it refunds: the package is refused first) with a child.
+        refund = self.make_tx(side, [CTxOut(0, CScript([OP_RETURN, bytes.fromhex("d952464e") + bytes(36 + 65)]))])
+        refund_child = self.child_of(side, refund, 1)
+        assert_equal([r.get("package-error") for r in side.testmempoolaccept([refund, refund_child])], ["package-drivechain-tx"] * 2)
+        self.unused(side, refund, refund_child)
+        # Plain transactions still go as a package.
+        plain = self.make_tx(side, [])
+        plain_child = self.child_of(side, plain, 0)
+        result = side.testmempoolaccept([plain, plain_child])
+        assert all(r["allowed"] for r in result), result
+        self.unused(side, plain, plain_child)
 
         self.log.info("A squat of a subname cannot be kept by whoever makes the subname")
         squat = subname_hash(side.getname("alpha")["namehash"], "sq")
