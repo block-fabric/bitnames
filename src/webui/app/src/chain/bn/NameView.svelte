@@ -84,7 +84,7 @@
     const hash = info.namehash;
     // The node walks the registry for them (listnames with its parent, one call): none left out, however many
     // names the chain has (audit port-2 #11: read here 1000 at a time, they stopped at 10000).
-    const page = await rpc.raw<NameInfo[]>('listnames', [SUBNAMES_SHOWN, 0, null, hash]).catch(() => [] as NameInfo[]);
+    const page = await rpc.raw<NameInfo[]>('listnames', [SUBNAMES_SHOWN, 0, null, handleOf(hash)]).catch(() => [] as NameInfo[]);
     if (!info || info.namehash !== hash) return;
     subnames = Array.isArray(page) ? page.filter((n) => n.parent === hash) : [];
     subsCut = subnames.length >= SUBNAMES_SHOWN;

@@ -418,7 +418,7 @@ describe('the pages of BitNames', () => {
     await waitFor(() => expect(within(view).getByRole('table', { name: 'Subnames' })).toBeTruthy());
     expect(within(view).getByText('blog.alice')).toBeTruthy();
     // Asked of the node by their parent, in one call: none left out past 10 000 names (audit port-2 #11).
-    expect(called('listnames').filter((c) => (c.params as unknown[])[3] !== undefined).map((c) => c.params)).toEqual([[2000, 0, null, hash('a')]]);
+    expect(called('listnames').filter((c) => (c.params as unknown[])[3] !== undefined).map((c) => c.params)).toEqual([[2000, 0, null, `0x${hash('a')}`]]);
     await fireEvent.input(document.querySelector('#subname-label')!, { target: { value: 'shop' } });
     await fireEvent.click(document.querySelector('#subname-create')!);
     await answer('yes');
