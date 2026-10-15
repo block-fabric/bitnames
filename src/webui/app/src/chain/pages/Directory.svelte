@@ -104,9 +104,11 @@
 
   <form class="bn-search" role="search" onsubmit={(e) => { e.preventDefault(); open(); }}>
     <span class="icon-lead"><Icon name="search" size={20} /></span>
-    <input id="directory-search" type="text" placeholder="A name, blog.core, #1739-0029 or 0x…" aria-label="Find a name" bind:value={query} spellcheck="false" autocomplete="off" autocapitalize="off" />
+    <!-- A short placeholder (the long one was cut at 480 px: audit port-2 #14), what it takes said under it. -->
+    <input id="directory-search" type="text" placeholder="Find a name" aria-label="Find a name" aria-describedby="directory-search-hint" bind:value={query} spellcheck="false" autocomplete="off" autocapitalize="off" />
     <button type="submit" class="btn small" disabled={!query.trim() || kind === 'bad'}>Open</button>
   </form>
+  <p class="bn-hint search-hint" id="directory-search-hint">A name, a subname (blog.core), a number (#1739-0029) or a hash (0x…).</p>
   {#if kind === 'bad'}<p class="bn-error">A name is lower-case letters, digits, - and _; a number is # and two groups of four digits; a hash is 0x and 64 hex digits.</p>{/if}
   {#if notFound}<p class="bn-error" role="alert"><SafeText text={notFound} /></p>{/if}
 
@@ -178,6 +180,9 @@
 </div>
 
 <style>
+  .search-hint {
+    margin: -0.4rem 0 0.2rem;
+  }
   .pager {
     display: flex;
     align-items: center;

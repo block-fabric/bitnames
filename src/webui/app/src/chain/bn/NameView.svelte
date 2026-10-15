@@ -76,18 +76,18 @@
   // --- Subnames ---
   let subnames = $state<NameInfo[]>([]);
   let subLoaded = $state(false);
+  /** Subnames listed at most; past that the tab says the list is cut. */
+  const SUBNAMES_SHOWN = 2000;
+  let subsCut = $state(false);
   async function loadSubnames() {
     if (!info) return;
     const hash = info.namehash;
-    const out: NameInfo[] = [];
-    // Through the registry, a thousand at a time (the node has no index by parent): at most 10000 names.
-    const total = Math.min(bn.info?.names ?? 1000, 10000);
-    for (let skip = 0; skip < total; skip += 1000) {
-      const page = await rpc.raw<NameInfo[]>('listnames', [1000, skip]).catch(() => [] as NameInfo[]);
-      if (!Array.isArray(page) || page.length === 0) break;
-      out.push(...page.filter((n) => n.parent === hash));
-    }
-    subnames = out;
+    // The node walks the registry for them (listnames with its parent, one call): none left out, however many
+    // names the chain has (audit port-2 #11: read here 1000 at a time, they stopped at 10000).
+    const page = await rpc.raw<NameInfo[]>('listnames', [SUBNAMES_SHOWN, 0, null, hash]).catch(() => [] as NameInfo[]);
+    if (!info || info.namehash !== hash) return;
+    subnames = Array.isArray(page) ? page.filter((n) => n.parent === hash) : [];
+    subsCut = subnames.length >= SUBNAMES_SHOWN;
     subLoaded = true;
   }
   $effect(() => {
@@ -311,6 +311,7 @@
               </tbody>
             </table>
           </div>
+          {#if subsCut}<p class="bn-hint">{t('The first %1 subnames are listed; there are more.', String(SUBNAMES_SHOWN))}</p>{/if}
         {/if}
         {#if editable}
           <form class="bn-form bn-gap" onsubmit={(e) => { e.preventDefault(); createSubname(); }}>

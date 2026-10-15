@@ -298,6 +298,16 @@ class BitNamesTest(SidechainTest):
         dev = side.createsubname("blog.nakamoto", "dev")
         self.mine_txs()
         assert_equal(side.getname("dev.blog.nakamoto")["namehash"], dev["namehash"])
+
+        self.log.info("The subnames of a name, one level down: listnames with its parent")
+        top, blog = side.getname("nakamoto")["namehash"], side.getname("blog.nakamoto")["namehash"]
+        under_top = side.listnames(1000, 0, None, "nakamoto")
+        assert blog in [n["namehash"] for n in under_top]
+        assert dev["namehash"] not in [n["namehash"] for n in under_top]
+        assert all(n["parent"] == top for n in under_top)
+        assert_equal([n["namehash"] for n in side.listnames(1000, 0, None, blog)], [dev["namehash"]])
+        assert_equal(side.listnames(1000, 0, None, "dev.blog.nakamoto"), [])
+        assert_equal(len(side.listnames(1, 0, None, "nakamoto")), 1)
         assert_raises_rpc_error(-8, "A name has no dots", side.reservename, "x.nakamoto")
 
         self.log.info("Dotted text is a subname or nothing; names are lower case")

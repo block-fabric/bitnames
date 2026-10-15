@@ -10,6 +10,7 @@
   import { t, tn } from '../../lib/i18n.svelte';
   import { go, nav, PAGES, takeFocus } from '../../lib/nav.svelte';
   import { toast, wallets, walletsEnabled } from '../../lib/state.svelte';
+  import { narrowWindow } from '../../lib/media.svelte';
   import '../bn/bn.css';
   import Domain from '../bn/Domain.svelte';
   import NameView from '../bn/NameView.svelte';
@@ -22,11 +23,19 @@
   let filter = $state('');
   let picked = $state<string | null>(null);
   let tab = $state('records');
+  // In a window too narrow for the list and the name side by side (700 or 480 px), one or the other: the list,
+  // then the name picked with a way back (audit port-2 #6: the name came under the whole list, 16 000 px down).
+  const single = $derived(narrowWindow.matches);
+  let listOpen = $state(true);
+  function pick(handle: string) {
+    picked = handle;
+    listOpen = false;
+  }
 
   // A name to show, given by another page (Get a name, the cards of the home), or a tab of the menus.
   $effect(() => {
     const key = takeFocus('names');
-    if (key) picked = key;
+    if (key) pick(key);
     if (nav.page === 'names' && ['records', 'profile', 'subnames', 'transfer', 'history'].includes(nav.tab)) tab = nav.tab;
   });
 
@@ -92,13 +101,14 @@
     </section>
   {:else}
     <div class="bn-split">
+      {#if !single || listOpen}
       <section class="panel" aria-label="The names of the wallet">
         <div class="panel-head"><h2>{tn('%n name(s)', names.length)}</h2></div>
         <div class="panel-body filter"><input type="search" placeholder="Filter" aria-label="Filter the names" bind:value={filter} /></div>
         <ul class="bn-list">
           {#each shown as m (m.namehash)}
             <li>
-              <button type="button" class="bn-item" aria-current={handleOf(m.namehash!) === picked ? 'true' : undefined} onclick={() => (picked = handleOf(m.namehash!))}>
+              <button type="button" class="bn-item" aria-current={handleOf(m.namehash!) === picked ? 'true' : undefined} onclick={() => pick(handleOf(m.namehash!))}>
                 <span class="bn-glyph" aria-hidden="true"><Icon name={isSub(m) ? 'subname' : 'tag'} size={16} /></span>
                 <span class="main">
                   <Domain name={m.name} seq={m.seq} />
@@ -114,7 +124,7 @@
           <ul class="bn-list">
             {#each reservations as r (r.txid + r.vout)}
               <li>
-                <button type="button" class="bn-item" aria-current={picked === `r:${r.txid}:${r.vout}` ? 'true' : undefined} onclick={() => (picked = `r:${r.txid}:${r.vout}`)}>
+                <button type="button" class="bn-item" aria-current={picked === `r:${r.txid}:${r.vout}` ? 'true' : undefined} onclick={() => pick(`r:${r.txid}:${r.vout}`)}>
                   <span class="bn-glyph" aria-hidden="true"><Icon name="clock" size={16} /></span>
                   <span class="main">
                     {#if r.name}<Domain name={r.name} />{:else}<span class="faint">{t('A hidden name')}</span>{/if}
@@ -126,8 +136,14 @@
           </ul>
         {/if}
       </section>
+      {/if}
 
-      {#if pickedName}
+      {#if single && !listOpen}
+        <div class="back"><button type="button" class="btn ghost small" onclick={() => (listOpen = true)}><Icon name="back" size={15} /> {tn('All %n name(s)', names.length)}</button></div>
+      {/if}
+      {#if single && listOpen}
+        <!-- The list alone: a name opens on its own, with a way back. -->
+      {:else if pickedName}
         {#key picked}
           <NameView handle={picked!} editable={!pickedName.leaving} knownText={pickedName.name} bind:tab ongone={() => (picked = null)} />
         {/key}
@@ -193,5 +209,8 @@
   }
   .pad {
     padding: 0.6rem 0.8rem;
+  }
+  .back {
+    margin-bottom: -0.4rem;
   }
 </style>

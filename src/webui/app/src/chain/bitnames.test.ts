@@ -36,6 +36,8 @@ import { buildCommands, menuSections } from '../lib/commands.svelte';
 import { dialogs } from '../lib/dialogs.svelte';
 import { AREAS, chainBeforeTools, HOME_QUICK_ACTIONS, NAV_SECTIONS } from '../lib/layout';
 import { go, nav } from '../lib/nav.svelte';
+import { handleShortcut } from '../lib/keyboard';
+import { narrowWindow } from '../lib/media.svelte';
 import { app, node, prefs, toasts, wallets } from '../lib/state.svelte';
 import { resetWalletData } from '../lib/walletdata.svelte';
 import { encode, program } from '../test/bech32';
@@ -75,8 +77,9 @@ async function fakeNode(r: BridgeRequest): Promise<unknown> {
     case 'getbitnamesinfo':
       return { ...info, names: registry.length };
     case 'listnames': {
-      const [count, skip, match] = p as [number, number, string | undefined];
-      const list = match ? registry.filter((n) => n.name?.includes(match)) : registry;
+      const [count, skip, match, parent] = p as [number, number, string | null | undefined, string | undefined];
+      const parentHash = parent === undefined ? undefined : (find(parent)?.namehash ?? parent);
+      const list = registry.filter((n) => (!match || n.name?.includes(match)) && (parentHash === undefined || n.parent === parentHash));
       return list.slice(skip ?? 0, (skip ?? 0) + (count ?? 100));
     }
     case 'getname': {
@@ -293,6 +296,10 @@ describe('the pages of BitNames', () => {
     for (const c of LOCAL_COMMANDS) expect(chain.items.map((i) => i.label)).toContain(c.label);
     chain.items.find((c) => c.label === 'Edit DNS records…')!.run();
     expect([nav.page, nav.tab]).toEqual(['names', 'records']);
+    // Alt+6 opens My names, as it opened the names of bitnames-qt (audit port-2 #8).
+    go('overview');
+    expect(handleShortcut(new KeyboardEvent('keydown', { key: '6', altKey: true }))).toBe(true);
+    expect(nav.page).toBe('names');
     expect(CHAIN.name).toBe('BitNames');
     expect(CHAIN.uriScheme).toBe('bitnames');
   });
@@ -410,6 +417,8 @@ describe('the pages of BitNames', () => {
     await fireEvent.click(within(view).getByRole('tab', { name: 'Subnames' }));
     await waitFor(() => expect(within(view).getByRole('table', { name: 'Subnames' })).toBeTruthy());
     expect(within(view).getByText('blog.alice')).toBeTruthy();
+    // Asked of the node by their parent, in one call: none left out past 10 000 names (audit port-2 #11).
+    expect(called('listnames').filter((c) => (c.params as unknown[])[3] !== undefined).map((c) => c.params)).toEqual([[2000, 0, null, hash('a')]]);
     await fireEvent.input(document.querySelector('#subname-label')!, { target: { value: 'shop' } });
     await fireEvent.click(document.querySelector('#subname-create')!);
     await answer('yes');
@@ -424,6 +433,37 @@ describe('the pages of BitNames', () => {
     await answer('yes');
     await waitFor(() => expect(called('transfername').length).toBe(1));
     expect(called('transfername')[0].params).toEqual([`0x${hash('a')}`, OTHER, true]);
+  });
+
+  it('My names: in a narrow window, the list or the name picked, with a way back (audit port-2 #6)', async () => {
+    (narrowWindow as { matches: boolean }).matches = true;
+    try {
+      mine = [
+        { kind: 'name', name: 'alice', namehash: hash('a'), seq: '0001-0001', address: ME, txid: tx('a'), vout: 0 },
+        ...Array.from({ length: 300 }, (_, i) => ({ kind: 'name' as const, name: `n${String(i).padStart(3, '0')}`, namehash: `7${(i + 1).toString(16).padStart(63, '0')}`, seq: `0002-${String(i).padStart(4, '0')}`, address: ME, txid: tx('a'), vout: i + 1 })),
+      ];
+      render(MyNames);
+      await loaded();
+      await waitFor(() => expect(screen.getByRole('region', { name: 'The names of the wallet' })).toBeTruthy());
+      await refreshNames();
+      await waitFor(() => expect(bn.mine.length).toBe(301));
+      // The list alone: no name under it.
+      expect(screen.queryByRole('region', { name: 'A name' })).toBeNull();
+      const alice = await waitFor(() => {
+        const b = within(screen.getByRole('region', { name: 'The names of the wallet' })).getAllByRole('button').find((x) => /alice/.test(x.textContent ?? ''));
+        expect(b).toBeTruthy();
+        return b!;
+      });
+      await fireEvent.click(alice);
+      // The name alone, at the top, with the way back.
+      await waitFor(() => expect(screen.getByRole('region', { name: 'A name' })).toBeTruthy());
+      expect(screen.queryByRole('region', { name: 'The names of the wallet' })).toBeNull();
+      await fireEvent.click(screen.getByRole('button', { name: /All 301 names/ }));
+      await waitFor(() => expect(screen.getByRole('region', { name: 'The names of the wallet' })).toBeTruthy());
+      expect(screen.queryByRole('region', { name: 'A name' })).toBeNull();
+    } finally {
+      (narrowWindow as { matches: boolean }).matches = false;
+    }
   });
 
   it('My names: a new block keeps what is being typed in the records and the profile', async () => {
@@ -494,6 +534,9 @@ describe('the pages of BitNames', () => {
     // The newest (blog.alice, number 4) first; a private name by its number.
     expect(items[0].textContent).toContain('blog.alice');
     expect(screen.getAllByText('#0001-0003').length).toBeGreaterThan(0);
+    // A short placeholder, what it takes said under it (audit port-2 #14: cut at 480 px).
+    expect((document.querySelector('#directory-search') as HTMLInputElement).placeholder).toBe('Find a name');
+    expect(document.getElementById('directory-search-hint')?.textContent).toContain('#1739-0029');
     await fireEvent.input(document.querySelector('#directory-search')!, { target: { value: 'bo' } });
     await waitFor(() => expect(called('listnames').some((c) => (c.params as unknown[])[2] === 'bo')).toBe(true));
     await fireEvent.input(document.querySelector('#directory-search')!, { target: { value: '#0001-0002' } });

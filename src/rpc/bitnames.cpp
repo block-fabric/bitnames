@@ -117,9 +117,10 @@ RPCMethod listnames()
             {"count", RPCArg::Type::NUM, RPCArg::Default{100}, "How many"},
             {"skip", RPCArg::Type::NUM, RPCArg::Default{0}, "How many to skip"},
             {"match", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Only the public names that contain this text"},
+            {"parent", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Only the subnames of this name (the name, the hash of the name, or its number), one level down"},
         },
         RPCResult{RPCResult::Type::ARR, "", "", {{RPCResult::Type::OBJ, "", "", NameResults()}}},
-        RPCExamples{HelpExampleCli("listnames", "10 0")},
+        RPCExamples{HelpExampleCli("listnames", "10 0") + HelpExampleCli("listnames", "100 0 null \"satoshi\"")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
     ChainstateManager& chainman{EnsureAnyChainman(request.context)};
@@ -131,12 +132,16 @@ RPCMethod listnames()
     const bitnames::State state{chainstate.SideState().BitNames()};
     UniValue result(UniValue::VARR);
     const std::optional<std::string> match{request.params[2].isNull() ? std::nullopt : std::optional{ToLower(request.params[2].get_str())}};
+    // The subnames of a name: the registry has no index by parent, so this walks it here, in the node, in one call
+    // (the GUI read it 1000 names a call, and stopped at 10000).
+    const std::optional<bitnames::NameHash> parent{request.params[3].isNull() ? std::nullopt : std::optional{bitnames::ParseNameArg(request.params[3], state)}};
     int skipped{0};
     // Through the numbers names have: those of released names are not there to step over.
     state.ForEachSeq(0, [&](uint32_t, const bitnames::NameHash& name) {
         if (result.size() >= static_cast<size_t>(count)) return false;
         const auto record{state.GetName(name)};
         if (!record) return true;
+        if (parent && record->parent != parent) return true;
         if (match && ToLower(bitnames::FullText(state, *record)).find(*match) == std::string::npos) return true;
         if (skipped++ < skip) return true;
         result.push_back(NameToJSON(chainstate, state, name, *record, std::nullopt));

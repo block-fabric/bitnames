@@ -13,4 +13,6 @@ export const LOCAL_ICONS = {
   mail: 'M3.5 6.5h17v11h-17zM3.5 7l8.5 6.5L20.5 7',
   /** DNS: a globe. */
   globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.6 2.6 3.8 5.6 3.8 9s-1.2 6.4-3.8 9c-2.6-2.6-3.8-5.6-3.8-9S9.4 5.6 12 3',
+  /** Back to the list: a chevron to the left. */
+  back: 'M15 5l-7 7 7 7',
 } as const satisfies Record<string, string>;
