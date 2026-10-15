@@ -5,6 +5,8 @@
 #ifndef BITCOIN_WEBUI_LOCAL_H
 #define BITCOIN_WEBUI_LOCAL_H
 
+#include <univalue.h>
+#include <util/fs.h>
 #include <webui/bridge.h>
 
 #include <functional>
@@ -34,6 +36,26 @@ using NodeFn = std::function<interfaces::Node&()>;
 
 /** Host methods of the chain's pages ("<chain>.something"), registered after the kit's. */
 void RegisterHost(Bridge& bridge, NodeFn node);
+
+/**
+ * BitNames: the store of what the chain does not keep (bitnames.store.load, bitnames.store.save): the names the
+ * app is registering (the text of a name a reservation hides, its next step), a JSON object in a file of the
+ * data directory of the network, written whole and flushed before it replaces the old one.
+ */
+inline constexpr const char* STORE_FILE{"bitnames-app.json"};
+inline constexpr size_t MAX_STORE_BYTES{4 << 20};
+/** The object of a store; null when there is none (or it could not be read: then kept aside as <file>.unreadable). */
+UniValue ReadStore(const fs::path& path);
+/** Write a store (an object). Throws HostError. */
+void WriteStore(const fs::path& path, const UniValue& value);
+
+/**
+ * DNS records given as rows (setnamerecords), checked as the wallet checks them: {"ok": true, "bytes": n} with
+ * the size of the records on the chain, or {"ok": false, "error": why}.
+ */
+UniValue CheckRecordRows(const UniValue& rows);
+/** Whether the rows of these records (the JSON of a name's data) give them back, so that an editor of rows may save them. */
+bool RecordsEditable(const UniValue& records);
 
 } // namespace webui::local
 
