@@ -133,9 +133,7 @@
                 <span class="bn-glyph" aria-hidden="true"><Icon name={n.parent ? 'subname' : 'tag'} size={16} /></span>
                 <span class="main">
                   {#if n.name}<Domain name={n.name} />{:else}<span class="bn-domain faint" translate="no">#{n.seq}</span>{/if}
-                  <span class="sub">
-                    <span translate="no">#{n.seq}</span> · {t('block %1', n.registered)}{#if !n.name} · {t('private')}{/if}{#if mineSet.has(n.namehash)} · {t('yours')}{/if}
-                  </span>
+                  <span class="sub">{[`#${n.seq}`, t('block %1', n.registered), n.name ? '' : t('private'), mineSet.has(n.namehash) ? t('yours') : ''].filter(Boolean).join(' · ')}</span>
                 </span>
               </button>
             </li>

@@ -184,6 +184,10 @@
   .center {
     justify-content: center;
   }
+  .center :global(.btn.cta) {
+    width: auto;
+    gap: 0.5rem;
+  }
   .filter {
     padding-bottom: 0.2rem;
   }

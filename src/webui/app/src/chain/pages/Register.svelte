@@ -256,7 +256,7 @@
             <Icon name="check" size={20} />
             <div class="grow">
               <strong><Domain name={typed} /> {verdict.kind === 'free' ? t('is free') : t('can be yours')}</strong>
-              <span class="why">{verdict.kind === 'free' ? tn('Reserved now, revealed after %n block(s): about %1 in all.', depth, blocksTime(depth + 2, spacing)) : t('A subname of your %1: it exists after the next block.', `${verdict.parent}.${TLD}`)}</span>
+              <span class="why">{verdict.kind === 'free' ? tn('Reserved now, revealed after %n block(s): %1 in all.', depth, blocksTime(depth + 2, spacing)) : t('A subname of your %1: it exists after the next block.', `${verdict.parent}.${TLD}`)}</span>
             </div>
           </div>
           <form class="bn-form options" onsubmit={(e) => { e.preventDefault(); getIt(); }}>
@@ -362,6 +362,11 @@
   }
   .options {
     max-width: 40rem;
+  }
+  .options :global(.btn.cta) {
+    width: auto;
+    justify-content: center;
+    gap: 0.5rem;
   }
   .regs {
     display: flex;
