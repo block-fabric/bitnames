@@ -1,0 +1,392 @@
+/* The pages of BitNames: shared pieces, in the colour tokens of themes.css only (text in the text tokens;
+   the colour of the brand is for marks and lines, never for text). Tables are the kit's (side-table). */
+
+.bn-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* A name as a domain: the name, then .x a step quieter. */
+.bn-domain {
+  font-family: var(--font-mono);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.bn-domain .tld {
+  color: var(--text-muted);
+  font-weight: 550;
+}
+.bn-domain.big {
+  font-size: 1.7rem;
+  line-height: 1.15;
+}
+
+/* The search of a name: one large field, the .x after it. */
+.bn-search {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.6rem 0.35rem 1rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+}
+.bn-search:focus-within {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.bn-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  padding: 0.55rem 0;
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  font-weight: 600;
+  box-shadow: none;
+}
+.bn-search input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.bn-search .tld {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  color: var(--text-muted);
+}
+.bn-search .icon-lead {
+  color: var(--text-muted);
+}
+
+/* What the search says: free, taken, not a name. */
+.bn-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.9rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--surface-2);
+}
+.bn-verdict.free {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.bn-verdict.taken,
+.bn-verdict.bad {
+  border-color: var(--line-strong);
+  background: var(--danger-soft);
+}
+.bn-verdict strong {
+  display: block;
+  font-size: 1.05rem;
+}
+.bn-verdict .why {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* The steps of a registration: dots on a line, the one reached filled. */
+.bn-track {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  margin: 0.4rem 0 0.2rem;
+  padding: 0;
+  list-style: none;
+}
+.bn-track li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+.bn-track li::before {
+  content: '';
+  position: absolute;
+  top: 0.55rem;
+  left: -50%;
+  width: 100%;
+  height: 2px;
+  background: var(--line-strong);
+}
+.bn-track li:first-child::before {
+  display: none;
+}
+.bn-track li.done::before,
+.bn-track li.now::before {
+  background: var(--brand, var(--accent));
+}
+.bn-track .dot {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border: 2px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface);
+}
+.bn-track li.done .dot {
+  border-color: var(--brand, var(--accent));
+  background: var(--brand, var(--accent));
+  color: var(--surface);
+}
+.bn-track li.now .dot {
+  border-color: var(--brand, var(--accent));
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.bn-track li.done,
+.bn-track li.now {
+  color: var(--text);
+}
+.bn-track li.now {
+  font-weight: 650;
+}
+
+/* A bar: how far along. */
+.bn-bar {
+  position: relative;
+  height: 0.38rem;
+  border-radius: 999px;
+  background: var(--raised);
+  overflow: hidden;
+}
+.bn-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--brand, var(--accent));
+}
+
+/* A list beside a panel: the names, and the one picked. */
+.bn-split {
+  display: grid;
+  grid-template-columns: minmax(15rem, 19rem) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+  container-type: inline-size;
+}
+@media (max-width: 900px) {
+  .bn-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.bn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0.4rem;
+  list-style: none;
+}
+.bn-item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: var(--radius-m);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.bn-item:hover {
+  background: var(--surface-2);
+}
+.bn-item[aria-current='true'] {
+  background: var(--raised);
+  border-left-color: var(--brand, var(--accent));
+}
+.bn-item .main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.bn-item .main .bn-domain {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bn-item .sub {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bn-glyph {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--brand, var(--accent));
+}
+
+/* The head of a name: its domain, what it is, who holds it. */
+.bn-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+  padding: 1.1rem 1.3rem 0.4rem;
+}
+.bn-head .tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
+/* Fields in a grid of two. */
+.bn-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr));
+  gap: 0.8rem 1rem;
+}
+.bn-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+.bn-hint {
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+.bn-error {
+  color: var(--negative);
+  font-size: 0.86rem;
+}
+.bn-empty {
+  padding: 1.6rem 1.3rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* The record editor: a row per record, the fields its type has. */
+.bn-records {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.bn-record {
+  display: grid;
+  grid-template-columns: minmax(5rem, 7rem) minmax(6.5rem, 8rem) minmax(0, 1fr) auto auto;
+  gap: 0.45rem;
+  align-items: start;
+  padding: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface-2);
+}
+.bn-record.invalid {
+  border-color: var(--negative);
+}
+.bn-record .nums {
+  display: flex;
+  gap: 0.3rem;
+}
+.bn-record .nums input {
+  width: 5.2rem;
+}
+.bn-record .problem {
+  grid-column: 1 / -1;
+  color: var(--negative);
+  font-size: 0.84rem;
+}
+.bn-record .answers {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+@container (max-width: 40rem) {
+  .bn-record {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .bn-record .value {
+    grid-column: 1 / -1;
+  }
+}
+
+/* A meter of bytes used out of those a name holds. */
+.bn-meter {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+.bn-meter .bn-bar {
+  flex: 1;
+  max-width: 12rem;
+}
+
+/* A part that can do harm, apart. */
+.bn-danger {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-l);
+  padding: 1rem 1.1rem;
+  background: var(--danger-soft);
+}
+.bn-danger h3 {
+  margin: 0 0 0.35rem;
+}
+
+/* Commands to copy, one per line. */
+.bn-command {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface-2);
+  min-width: 0;
+}
+.bn-command code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+/* The status of a lookup. */
+.bn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  background: var(--raised);
+  color: var(--text);
+}
+.bn-status.ok {
+  background: var(--accent-soft);
+}
+.bn-status.no {
+  background: var(--danger-soft);
+}

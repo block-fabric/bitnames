@@ -2,13 +2,11 @@
 // LocalPages.svelte, which shows them, and chain.json) that a chain made from the template changes, so
 // that merges of the template stay clean. See doc/webui.md, "Pages of a chain of its own".
 //
-// The template has none. A sidechain adds an entry per page, for example
-//
-//   { id: 'names', title: 'Names', icon: 'book', section: 'chain', summary: 'Register and manage names', wallet: true,
-//     quick: { label: 'Register a name' }, keywords: 'bitnames register' }
-//
-// then its component in LocalPages.svelte, the RPC methods it calls in src/webui/local.cpp, and a
-// command or a dashboard card if it wants one (LOCAL_COMMANDS, LocalCards in LocalPages.svelte).
+// BitNames: getting a name (search, then reservation and registration as one flow), the names of the wallet
+// (records, profile, subnames, giving away, releasing), the directory of every name, paymail (paid messages,
+// encrypting and signing as a name), and the DNS of .x (the server of the node, a lookup tester); their
+// components in LocalPages.svelte (chain/pages, chain/bn), their RPC methods in src/webui/local.cpp, the cards
+// of the home in LocalCards.svelte, their icons in icons.ts.
 import type { IconName } from '../components/Icon.svelte';
 
 export interface LocalPage {
@@ -32,7 +30,13 @@ export interface LocalPage {
   quick?: { label: string; icon?: IconName; tab?: string };
 }
 
-export const LOCAL_PAGES = [] as const satisfies readonly LocalPage[];
+export const LOCAL_PAGES = [
+  { id: 'register', title: 'Get a name', icon: 'tagplus', section: 'chain', summary: 'Find a name that is free and take it: reserved, then registered, step by step', wallet: true, keywords: 'bitnames register reserve search available domain buy claim', quick: { label: 'Get a name', icon: 'tagplus' } },
+  { id: 'names', title: 'My names', icon: 'tag', section: 'chain', summary: 'The names of the wallet: DNS records, profile and keys, subnames, giving away, releasing', wallet: true, keywords: 'bitnames records dns subnames transfer release keys profile' },
+  { id: 'directory', title: 'Name directory', icon: 'atlas', section: 'chain', summary: 'Every name of the registry: search, browse, and see any name whole', keywords: 'bitnames explore search lookup whois registry' },
+  { id: 'paymail', title: 'Paymail', icon: 'mail', section: 'chain', summary: 'Messages with a payment that only the holder of a name reads; encrypt and sign as a name', wallet: true, keywords: 'bitnames paid messages encrypt decrypt sign verify inbox', quick: { label: 'Paymail', icon: 'mail', tab: 'send' } },
+  { id: 'dns', title: 'DNS', icon: 'globe', section: 'chain', summary: 'The DNS server of .x names on this node, and a lookup tester', keywords: 'bitnames dnsbind resolve lookup resolver .x domain' },
+] as const satisfies readonly LocalPage[];
 
 export type LocalPageId = (typeof LOCAL_PAGES)[number]['id'];
 
@@ -46,4 +50,11 @@ export interface LocalCommand {
   keywords?: string;
 }
 
-export const LOCAL_COMMANDS = [] as const satisfies readonly LocalCommand[];
+export const LOCAL_COMMANDS = [
+  { id: 'bn.records', label: 'Edit DNS records…', page: 'names', tab: 'records', tip: 'The records of a name of the wallet: what yourname.x answers', keywords: 'dns records a aaaa cname mx' },
+  { id: 'bn.subname', label: 'Make a subname…', page: 'names', tab: 'subnames', tip: 'A subname of a name of the wallet, for this wallet or anyone', keywords: 'subname subdomain' },
+  { id: 'bn.give', label: 'Give a name away…', page: 'names', tab: 'transfer', tip: 'Give a name of the wallet to another address, or release it', keywords: 'transfer release' },
+  { id: 'bn.send-paymail', label: 'Send paymail…', page: 'paymail', tab: 'send', tip: 'Pay a name, with a message only its holder can read', keywords: 'paid message' },
+  { id: 'bn.sign', label: 'Sign as a name…', page: 'paymail', tab: 'tools', tip: 'Sign a text with the signing key of a name, or check a signature', keywords: 'signature verify encrypt decrypt' },
+  { id: 'bn.lookup', label: 'Look up a .x domain', page: 'dns', tip: 'What the DNS server of the node answers for a domain', keywords: 'resolve dns' },
+] as const satisfies readonly LocalCommand[];
