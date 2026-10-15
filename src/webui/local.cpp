@@ -149,7 +149,7 @@ std::set<std::string> KeyedRpcMethods()
     return {"reservename", "registername", "releasereservation", "updatename", "setnamerecords", "createsubname", "transfername", "releasename", "getnewnamekeys", "signasname", "decryptnamemessage", "sendpaymail", "listpaymail"};
 }
 
-void RegisterHost(Bridge& bridge, NodeFn node)
+void RegisterHost(Bridge& bridge, NodeFn node, guard::ConfirmFn confirm)
 {
     // The names this app is registering, by wallet: the text a reservation hides and the step it is at, so that
     // the registration goes on after a restart (chains-qt kept them in its settings).
@@ -168,6 +168,7 @@ void RegisterHost(Bridge& bridge, NodeFn node)
     bridge.RegisterHost("bitnames.records.editable", [](const UniValue& params) {
         return UniValue{RecordsEditable(Param(params, "records"))};
     });
+    (void)confirm;
 }
 
 } // namespace webui::local

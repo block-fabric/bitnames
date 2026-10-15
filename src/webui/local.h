@@ -8,6 +8,7 @@
 #include <univalue.h>
 #include <util/fs.h>
 #include <webui/bridge.h>
+#include <webui/guard.h>
 
 #include <functional>
 #include <map>
@@ -34,8 +35,12 @@ std::set<std::string> KeyedRpcMethods();
 /** The node, while it runs (throws a HostError before); the host methods take it per call. */
 using NodeFn = std::function<interfaces::Node&()>;
 
-/** Host methods of the chain's pages ("<chain>.something"), registered after the kit's. */
-void RegisterHost(Bridge& bridge, NodeFn node);
+/**
+ * Host methods of the chain's pages ("<chain>.something"), registered after the kit's. `confirm` asks the
+ * user on the desktop (Window::Confirm, outside the page): what a page must not do on its own word, such as
+ * showing a key, asks there first and answers BRIDGE_CANCELLED on a no (audit port-2 #3).
+ */
+void RegisterHost(Bridge& bridge, NodeFn node, guard::ConfirmFn confirm);
 
 /**
  * BitNames: the store of what the chain does not keep (bitnames.store.load, bitnames.store.save): the names the
