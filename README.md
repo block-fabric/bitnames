@@ -13,11 +13,15 @@ can have subnames, and the node can answer DNS for them under the `.x` domain.
 | RPC port | 9954 (testnet 19954, signet 39954, regtest 29954) |
 
 BitNames is the [sidechain template](doc/sidechain.md) of Chains with names added. A BitNames node needs a
-Chains node (`chainsd` or `chains-qt`) to follow, reached over its RPC interface.
+Chains node (`chainsd` or `chains-app`) to follow, reached over its RPC interface.
+
+Its GUI is `bitnames-app`: the node and its wallet with an HTML interface in a native web view
+(WebKitGTK on Linux, WebView2 on Windows), with pages for finding and registering names, the names of
+the wallet and their records, paid messages and the DNS of `.x` ([doc/webui.md](doc/webui.md)). There is no Qt GUI.
 
 ## Installing
 
-Builds for Linux (x86-64) are at https://blockfab.org/drivechains/. Unpack, check `sha256sum -c SHA256SUMS`, and run what is in `bin/`. The wallet needs the Qt libraries of the system (on Ubuntu 24.04: `sudo apt install libqt6widgets6 libqt6network6 libqt6dbus6 libqrencode4 libsqlite3-0`); the node and the tools need none of them.
+Builds for Linux (x86-64) are at https://blockfab.org/drivechains/. Unpack, check `sha256sum -c SHA256SUMS`, and run what is in `bin/`. The app needs WebKitGTK (on Ubuntu 24.04: `sudo apt install libwebkit2gtk-4.1-0 libsqlite3-0`); the node and the tools need none of it. On Windows, the installer or the zip of `bitnames-app` (the WebView2 Runtime of Windows 10 and 11).
 
 ## Building from source
 
@@ -25,21 +29,22 @@ On Debian or Ubuntu (24.04):
 
 ```sh
 sudo apt install build-essential cmake pkgconf python3 libevent-dev libboost-dev \
-    libsqlite3-dev libzmq3-dev qt6-base-dev qt6-tools-dev qt6-l10n-tools libqrencode-dev
-git clone https://github.com/block-fabric/bitnames.git
-cd bitnames
-cmake -B build -DBUILD_GUI=ON
+    libsqlite3-dev libzmq3-dev libgtk-3-dev libwebkit2gtk-4.1-dev nodejs npm
+git clone https://github.com/block-fabric/bitnames-app.git
+cd bitnames-app
+cmake -B build
 cmake --build build -j$(nproc)
 ```
 
-Leave out `-DBUILD_GUI=ON` (and the Qt packages) for a node without a window. Other systems and
-options: [doc/build-unix.md](doc/build-unix.md) and the other `doc/build-*.md`.
+`-DBUILD_WEBUI=OFF` (and no GTK, WebKitGTK or Node.js) for a node without a window. Windows: cross-built
+with the depends system (`make -C depends HOST=x86_64-w64-mingw32 NO_QT=1`), see [doc/webui.md](doc/webui.md).
+Other systems and options: [doc/build-unix.md](doc/build-unix.md) and the other `doc/build-*.md`.
 
 The programs, in `build/bin`:
 
 | Program | What it is |
 |---|---|
-| `bitnames-qt` | the wallet, with its window |
+| `bitnames-app` | the wallet, with its window |
 | `bitnamesd` | the node, without a window |
 | `bitnames-cli` | commands for a running node or wallet |
 | `bitnames-wallet`, `bitnames-tx`, `bitnames-util` | tools that work without a node |
@@ -53,14 +58,14 @@ set to the folder of its programs.
 First a Chains node, with RPC on (`server=1` in `chains.conf`, or `-server`), on the same network.
 
 The simplest is to let the Chains wallet run BitNames: in its **Sidechain Nodes** window, select
-BitNames, press **Locate programs…** and choose the folder with `bitnamesd` and `bitnames-qt`, then **Start node**
+BitNames, press **Locate programs…** and choose the folder with `bitnamesd` and `bitnames-app`, then **Start node**
 or **Open wallet**.
 
 By hand, on the same computer as the Chains node:
 
 ```sh
-bitnames-qt                 # the main network
-bitnames-qt -testnet        # the test network
+bitnames-app                # the main network
+bitnames-app -testnet       # the test network
 ```
 
 It finds the Chains node by itself: RPC on 127.0.0.1 at the port of the network, and the cookie
@@ -106,12 +111,12 @@ options are read only from the `[test]` section.
 
 ## Coins in and out
 
-- **Deposit.** In BitNames, get a deposit address (`getdepositaddress`, or the **Mainchain** page):
+- **Deposit.** In BitNames, get a deposit address (`getdepositaddress`, or the **Peg** page):
   `s3_<address>_<checksum>`. In Chains, send to it from the **Sidechains** page, or
   `chains-cli createsidechaindeposit 3 <deposit address> <amount>`. The coins appear with the
   next BitNames block.
 - **Withdraw.** `createwithdrawal <Chains address> <amount> ( <fee for Chains miners> )`, or the
-  **Mainchain** page. Withdrawals are paid in bundles that Chains miners vote on (about three
+  **Peg** page. Withdrawals are paid in bundles that Chains miners vote on (about three
   months on the main network, 600 blocks on the test network). A withdrawal not in the bundle
   being voted on can be taken back: `refundwithdrawal <txid> <vout>`.
 - **Merged mining.** BitNames blocks are mined by Chains miners, for a fee in CHN paid by the Chains
@@ -125,13 +130,13 @@ How deposits, withdrawals, bundles and merged mining work: [doc/sidechain.md](do
 ## Names
 
 - **Getting a name** takes two steps, a hidden reservation then the registration, so that nobody can
-  see it coming and take it first. The **Names** page does both.
+  see it coming and take it first. The **Get a name** page does both, as one guided flow.
 - A name holds addresses, keys, a commitment and **DNS records**; it can be sent to another owner,
   have **subnames** owned by anyone, and be released.
 - **Paid messages** (paymail): anyone can send the owner of a name an encrypted message with a payment.
 - **DNS.** With `-dnsbind=127.0.0.1:5335` the node answers DNS questions for `.x` names, so that
-  `http://yourname.x` works on the computer once its resolver asks the node (the **Names** page says
-  how).
+  `http://yourname.x` works on the computer once its resolver asks the node (the **DNS** page says
+  how, and tests lookups).
 
 How names work: [doc/bitnames.md](doc/bitnames.md).
 
@@ -150,8 +155,12 @@ Sidechain, in the wallet: `getdepositaddress`, `createwithdrawal`, `refundwithdr
 
 ## Wallet
 
-The pages: Overview, Send, Receive, Transactions, **Mainchain** (deposits, withdrawals, merged
-mining), and **Names** (get a name, your names, records, subnames, paid messages, DNS).
+The pages of `bitnames-app`: those of every sidechain (Overview, Send, Receive, Transactions, Wallets,
+**Peg**, **Merged mining**, the explorer, the node window), and those of the names: **Get a name**
+(search with live availability, then reservation and registration as one guided flow), **My names**
+(records, keys, subnames, giving away, releasing), **Directory** (every public name, its history),
+**Paymail** (paid messages, encrypting and signing as a name) and **DNS** (the resolver of `.x` and a
+lookup tester). How they are made: [doc/webui.md](doc/webui.md).
 
 ## Credits
 
