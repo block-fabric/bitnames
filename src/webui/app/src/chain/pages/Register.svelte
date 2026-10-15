@@ -11,7 +11,7 @@
   import SafeText from '../../components/SafeText.svelte';
   import { ask, errorText, inform, walletRpc } from '../../lib/dialogs.svelte';
   import { formatTime, shortHash } from '../../lib/format';
-  import { t } from '../../lib/i18n.svelte';
+  import { t, tn } from '../../lib/i18n.svelte';
   import { go, goTo, PAGES, takeFocus } from '../../lib/nav.svelte';
   import { rpc } from '../../lib/rpc';
   import { app, node, toast, wallets, walletsEnabled } from '../../lib/state.svelte';
@@ -111,7 +111,7 @@
       const name = typed;
       const r = await ask({
         title: t('Get the name'),
-        message: t('Reserve %1 now, and register it once the reservation is %2 block(s) deep?', `${name}.${TLD}`, depth),
+        message: tn('Reserve %1 now, and register it once the reservation is %n block(s) deep?', depth, `${name}.${TLD}`),
         informative: makePublic
           ? t('Public: its text is on the chain, so anyone can find it by name. Two small transactions of the wallet pay their fees.')
           : t('Private: only its hash is on the chain; it works the same, but only those who know it can find it. Two small transactions of the wallet pay their fees.'),
@@ -172,9 +172,9 @@
     const p = progressOf(r, tip, depth);
     if (r.step === 'failed') return r.error ?? t('Stopped.');
     if (p.stage === 'confirm') return t('The reservation waits for a block. The name stays hidden meanwhile.');
-    if (p.stage === 'wait') return t('Hidden for %1 more block(s): it can be revealed from block %2, in %3.', p.blocksLeft, p.revealFrom, blocksTime(p.blocksLeft ?? 0, spacing));
+    if (p.stage === 'wait') return tn('Hidden for %n more block(s): it can be revealed from block %1, in %2.', p.blocksLeft ?? 0, p.revealFrom, blocksTime(p.blocksLeft ?? 0, spacing));
     if (p.stage === 'register' && r.step === 'reserved') return locked ? t('Deep enough: register it now (the wallet asks for its passphrase).') : t('Deep enough: the registration goes out with this block.');
-    if (p.stage === 'register') return p.late ? t('Not in a block %1 blocks after it was sent: whoever makes the blocks may be keeping it out. It is sent again if it drops.', depth) : t('Revealed: it should be in a block by block %1.', p.deadline);
+    if (p.stage === 'register') return p.late ? tn('Not in a block %n block(s) after it was sent: whoever makes the blocks may be keeping it out. It is sent again if it drops.', depth) : t('Revealed: it should be in a block by block %1.', p.deadline);
     return t('Yours since block %1.', r.registeredHeight ?? '–');
   }
 
@@ -256,7 +256,7 @@
             <Icon name="check" size={20} />
             <div class="grow">
               <strong><Domain name={typed} /> {verdict.kind === 'free' ? t('is free') : t('can be yours')}</strong>
-              <span class="why">{verdict.kind === 'free' ? t('Reserved now, revealed after %1 block(s): about %2 in all.', depth, blocksTime(depth + 2, spacing)) : t('A subname of your %1: it exists after the next block.', `${verdict.parent}.${TLD}`)}</span>
+              <span class="why">{verdict.kind === 'free' ? tn('Reserved now, revealed after %n block(s): about %1 in all.', depth, blocksTime(depth + 2, spacing)) : t('A subname of your %1: it exists after the next block.', `${verdict.parent}.${TLD}`)}</span>
             </div>
           </div>
           <form class="bn-form options" onsubmit={(e) => { e.preventDefault(); getIt(); }}>
@@ -286,7 +286,7 @@
     </section>
 
     <section class="panel" aria-label="Registrations">
-      <div class="panel-head"><h2>Registrations</h2>{#if bn.info}<span class="muted small">{t('Reveal depth: %1 block(s)', depth)}</span>{/if}</div>
+      <div class="panel-head"><h2>Registrations</h2>{#if bn.info}<span class="muted small">{tn('Reveal depth: %n block(s)', depth)}</span>{/if}</div>
       {#if mine.length === 0 && strays.length === 0}
         <p class="bn-empty">None under way. A name you get shows here, step by step, until it is yours.</p>
       {:else}
@@ -340,8 +340,8 @@
       <div class="panel-head"><h2>How a name is taken</h2></div>
       <ol class="panel-body steps">
         <li><strong>Reserved.</strong> A transaction commits to the name without showing it, so that nobody can see it coming and take it first.</li>
-        <li><strong>Hidden.</strong> The reservation stays hidden {depth} block(s), so that whoever makes the next block cannot take the name as it is revealed.</li>
-        <li><strong>Revealed.</strong> The app sends the registration, which shows the name; it should be in a block within {depth} block(s).</li>
+        <li><strong>{t('Hidden.')}</strong> {tn('The reservation stays hidden %n block(s), so that whoever makes the next block cannot take the name as it is revealed.', depth)}</li>
+        <li><strong>{t('Revealed.')}</strong> {tn('The app sends the registration, which shows the name; it should be in a block within %n block(s).', depth)}</li>
         <li><strong>Yours.</strong> The name never expires: it is yours until you give it away or release it.</li>
       </ol>
     </section>

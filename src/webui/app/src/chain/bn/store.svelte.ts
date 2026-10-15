@@ -30,6 +30,12 @@ export const bn = $state({
   recent: [] as NameInfo[],
   /** The registrations this app is making, of every wallet. */
   registrations: [] as Registration[],
+  /**
+   * Names of the wallet whose last change waits for a block: the wallet does not list a name while the output
+   * that carries it is spent by a transaction not in a block yet. Shown meanwhile, marked; `leaving`: given
+   * away or released.
+   */
+  inflight: [] as { wallet: string; txid: string; name: MyName; leaving: boolean }[],
   /** The wallet `mine` is of. */
   wallet: null as string | null,
   height: -1,
@@ -76,6 +82,20 @@ async function saveStore(): Promise<void> {
       toast('error', t('The registrations could not be saved'), errorText(e));
     }
   }
+}
+
+/** A change of a name of the wallet sent (txid): the name is shown, marked, until the change is in a block. */
+export function noteChange(wallet: string, txid: string, namehash: string, leaving = false): void {
+  const name = bn.mine.find((m) => m.kind === 'name' && m.namehash === namehash) ?? bn.inflight.find((x) => x.name.namehash === namehash)?.name;
+  if (!name) return;
+  bn.inflight = [...bn.inflight.filter((x) => !(x.wallet === wallet && x.name.namehash === namehash)), { wallet, txid, name, leaving }];
+}
+
+/** The names of the wallet: those it lists, and those whose change waits for a block. */
+export function namesOf(wallet: string | null): (MyName & { waiting?: boolean; leaving?: boolean })[] {
+  const listed = bn.wallet === wallet ? bn.mine.filter((m) => m.kind === 'name' && m.namehash) : [];
+  const waiting = bn.inflight.filter((x) => x.wallet === wallet && !listed.some((m) => m.namehash === x.name.namehash)).map((x) => ({ ...x.name, waiting: true, leaving: x.leaving }));
+  return [...listed.map((m) => ({ ...m, waiting: bn.inflight.some((x) => x.wallet === wallet && x.name.namehash === m.namehash) })), ...waiting];
 }
 
 /** The registrations of a wallet, newest first. */
@@ -249,6 +269,19 @@ async function refreshOnce(): Promise<void> {
     bn.height = tip;
     bn.error = '';
     bn.loaded = true;
+    if (wallet !== null) {
+      // A change in a block (or lost): the wallet lists the name again, or not (given away, released).
+      const still: typeof bn.inflight = [];
+      for (const x of bn.inflight) {
+        if (x.wallet !== wallet) {
+          still.push(x);
+          continue;
+        }
+        const at = await blockOf(wallet, x.txid);
+        if (at === 0) still.push(x);
+      }
+      bn.inflight = still;
+    }
     if (wallet !== null && storeLoaded && (await advance(wallet, tip, info, mine))) await saveStore();
   } catch (e) {
     bn.error = errorText(e);
@@ -292,5 +325,5 @@ export function resetNames(): void {
   lastWallet = undefined;
   storeLoaded = false;
   storeWarned = false;
-  Object.assign(bn, { info: null, mine: [], recent: [], registrations: [], wallet: null, height: -1, error: '', loaded: false, version: 0 });
+  Object.assign(bn, { info: null, mine: [], recent: [], registrations: [], inflight: [], wallet: null, height: -1, error: '', loaded: false, version: 0 });
 }

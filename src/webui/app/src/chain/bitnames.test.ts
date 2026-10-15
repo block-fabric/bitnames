@@ -442,6 +442,30 @@ describe('the pages of BitNames', () => {
     await waitFor(() => expect((document.querySelector('#profile-ipv4') as HTMLInputElement).value).toBe('192.0.2.1'));
   });
 
+  it('My names: a name whose change waits for a block stays, marked, until the change is in one', async () => {
+    go('names', 'profile');
+    render(MyNames);
+    render(DialogHost);
+    await loaded();
+    await waitFor(() => expect(document.querySelector('#profile-ipv4')).not.toBeNull());
+    await fireEvent.input(document.querySelector('#profile-ipv4')!, { target: { value: '198.51.100.3' } });
+    await fireEvent.click(document.querySelector('#profile-save')!);
+    await answer('yes');
+    await waitFor(() => expect(called('updatename').length).toBe(1));
+    // The wallet no longer lists the name: its output is spent by a transaction not in a block yet.
+    mine = [];
+    wallettx[tx('t')] = { confirmations: 0 };
+    await refreshNames();
+    await waitFor(() => expect(screen.getByText(/a change waits for a block/)).toBeTruthy());
+    expect(screen.getByText(/A change of this name waits for the next block/)).toBeTruthy();
+    // In a block: listed again, no longer marked.
+    mine = [{ kind: 'name', name: 'alice', namehash: hash('a'), seq: '0001-0001', address: ME, txid: tx('t'), vout: 0 }];
+    wallettx[tx('t')] = { confirmations: 1, blockheight: 21 };
+    await refreshNames();
+    await waitFor(() => expect(screen.queryByText(/a change waits for a block/)).toBeNull());
+    await waitFor(() => expect(document.querySelector('.bn-item[aria-current="true"]')?.textContent).toContain('alice'));
+  });
+
   it('My names: releasing asks for the box to be ticked', async () => {
     go('names', 'transfer');
     render(MyNames);

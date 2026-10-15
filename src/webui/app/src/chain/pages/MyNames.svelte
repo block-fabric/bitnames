@@ -7,14 +7,14 @@
   import SafeText from '../../components/SafeText.svelte';
   import { ask, errorText, inform, walletRpc } from '../../lib/dialogs.svelte';
   import { shortHash } from '../../lib/format';
-  import { t } from '../../lib/i18n.svelte';
+  import { t, tn } from '../../lib/i18n.svelte';
   import { go, nav, PAGES, takeFocus } from '../../lib/nav.svelte';
   import { toast, wallets, walletsEnabled } from '../../lib/state.svelte';
   import '../bn/bn.css';
   import Domain from '../bn/Domain.svelte';
   import NameView from '../bn/NameView.svelte';
   import { handleOf, shownName, TLD, type MyName } from '../bn/model';
-  import { bn, refreshNames, registrationsOf, startNames } from '../bn/store.svelte';
+  import { bn, namesOf, refreshNames, registrationsOf, startNames } from '../bn/store.svelte';
 
   $effect(() => startNames());
 
@@ -30,12 +30,8 @@
     if (nav.page === 'names' && ['records', 'profile', 'subnames', 'transfer', 'history'].includes(nav.tab)) tab = nav.tab;
   });
 
-  const names = $derived(
-    bn.mine
-      .filter((m) => m.kind === 'name' && m.namehash)
-      .slice()
-      .sort((a, b) => shownName(a).localeCompare(shownName(b))),
-  );
+  // With those whose last change waits for a block (the wallet does not list them meanwhile).
+  const names = $derived(namesOf(wallets.current).sort((a, b) => shownName(a).localeCompare(shownName(b))));
   const reservations = $derived(bn.mine.filter((m) => m.kind === 'reservation'));
   const shown = $derived(names.filter((m) => !filter.trim() || shownName(m).includes(filter.trim().toLowerCase())));
   const under = $derived(registrationsOf(wallets.current).filter((r) => r.step === 'reserved' || r.step === 'registering'));
@@ -91,13 +87,13 @@
       <span class="bn-glyph big" aria-hidden="true"><Icon name="tag" size={30} /></span>
       <h2>No names yet</h2>
       <p class="muted">A name points to your servers as <span translate="no">yourname.{TLD}</span>, holds your keys, takes paid messages and hands out subnames. It is yours for good.</p>
-      {#if under.length}<p class="muted">{t('%1 registration(s) under way.', under.length)}</p>{/if}
+      {#if under.length}<p class="muted">{tn('%n registration(s) under way.', under.length)}</p>{/if}
       <div class="row center"><button type="button" class="btn cta" onclick={() => go('register')}><Icon name="search" size={16} /> Find a name</button></div>
     </section>
   {:else}
     <div class="bn-split">
       <section class="panel" aria-label="The names of the wallet">
-        <div class="panel-head"><h2>{t('%1 name(s)', names.length)}</h2></div>
+        <div class="panel-head"><h2>{tn('%n name(s)', names.length)}</h2></div>
         <div class="panel-body filter"><input type="search" placeholder="Filter" aria-label="Filter the names" bind:value={filter} /></div>
         <ul class="bn-list">
           {#each shown as m (m.namehash)}
@@ -106,7 +102,7 @@
                 <span class="bn-glyph" aria-hidden="true"><Icon name={isSub(m) ? 'subname' : 'tag'} size={16} /></span>
                 <span class="main">
                   <Domain name={m.name} seq={m.seq} />
-                  <span class="sub">{isSub(m) ? t('Subname') : t('Name')} · <span translate="no">#{m.seq ?? '–'}</span></span>
+                  <span class="sub">{isSub(m) ? t('Subname') : t('Name')} · <span translate="no">#{m.seq ?? '–'}</span>{#if m.leaving} · {t('leaving with the next block')}{:else if m.waiting} · {t('a change waits for a block')}{/if}</span>
                 </span>
               </button>
             </li>
@@ -133,7 +129,7 @@
 
       {#if pickedName}
         {#key picked}
-          <NameView handle={picked!} editable knownText={pickedName.name} bind:tab ongone={() => (picked = null)} />
+          <NameView handle={picked!} editable={!pickedName.leaving} knownText={pickedName.name} bind:tab ongone={() => (picked = null)} />
         {/key}
       {:else if pickedReservation}
         <section class="panel">

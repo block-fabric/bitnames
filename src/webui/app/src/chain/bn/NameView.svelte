@@ -19,7 +19,7 @@
   import ProfileForm from './ProfileForm.svelte';
   import RecordEditor from './RecordEditor.svelte';
   import { handleOf, isLabel, type NameHistory, type NameInfo } from './model';
-  import { bn, refreshNames } from './store.svelte';
+  import { bn, noteChange, refreshNames } from './store.svelte';
 
   let {
     handle,
@@ -122,6 +122,7 @@
     try {
       const done = await walletRpc<{ txid: string; namehash: string }>(wallet, 'createsubname', holder.trim() ? [handle, l, holder.trim()] : [handle, l]);
       if (!done) return;
+      noteChange(wallet, done.txid, handle.slice(2));
       toast('success', t('Subname on its way'), t('%1 exists after the next block.', shown));
       label = '';
       holder = '';
@@ -161,6 +162,7 @@
     try {
       const txid = await walletRpc<string>(wallet, 'transfername', [handle, to.trim(), clearKeys]);
       if (txid === null) return;
+      noteChange(wallet, txid, handle.slice(2), true);
       toast('success', t('Name given'), t('It goes to its new holder with the next block.'));
       to = '';
       toKey++;
@@ -196,6 +198,7 @@
     try {
       const txid = await walletRpc<string>(wallet, 'releasename', [handle, true]);
       if (txid === null) return;
+      noteChange(wallet, txid, handle.slice(2), true);
       toast('success', t('Name released'), t('It leaves the registry with the next block.'));
       void refreshNames();
       ongone?.();
@@ -272,6 +275,9 @@
         {/if}
       </dl>
     </header>
+    {#if bn.inflight.some((x) => x.wallet === wallets.current && x.name.namehash === info?.namehash)}
+      <p class="side-warn bn-subnote" role="status">A change of this name waits for the next block: what it shows is the name as it is in the chain now, and the next change can be sent once that one is in a block.</p>
+    {/if}
     {#if info.parent}
       <p class="side-note bn-subnote">A subname depends on its parent: if the holder of the parent releases it, this subname is released with it, and a delegation in the records of the parent takes its domain elsewhere. Only its holder updates it, gives it on or makes subnames of it.</p>
     {/if}

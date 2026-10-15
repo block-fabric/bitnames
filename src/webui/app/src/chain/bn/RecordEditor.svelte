@@ -8,11 +8,11 @@
   import { request } from '../../lib/bridge';
   import { css } from '../../lib/actions';
   import { ask, errorText, inform, walletRpc } from '../../lib/dialogs.svelte';
-  import { t } from '../../lib/i18n.svelte';
+  import { t, tn } from '../../lib/i18n.svelte';
   import { rpc } from '../../lib/rpc';
   import { toast, wallets } from '../../lib/state.svelte';
   import { MAX_RECORDS_BYTES, RECORD_TYPES, rowDomain, rowForWallet, rowProblem, rowsFrom, type RecordRow, type RecordType } from './model';
-  import { refreshNames } from './store.svelte';
+  import { noteChange, refreshNames } from './store.svelte';
 
   let {
     handle,
@@ -109,7 +109,7 @@
     if (wallet === null || !canEdit || problems.some(Boolean) || (check && !check.ok)) return;
     const r = await ask({
       title: t('Save the records'),
-      message: rows.length ? t('Save %1 record(s) for this name? They replace the records it has.', rows.length) : t('Remove every record of this name?'),
+      message: rows.length ? tn('Save %n record(s) for this name? They replace the records it has.', rows.length) : t('Remove every record of this name?'),
       informative: t('The change is a transaction of the wallet: the name answers with the new records after the next block.'),
       level: 'question',
       choices: [
@@ -122,6 +122,7 @@
     try {
       const txid = await walletRpc<string>(wallet, 'setnamerecords', [handle, rows.map(rowForWallet)]);
       if (txid === null) return;
+      noteChange(wallet, txid, handle.slice(2));
       saved = rows.map(({ key: _key, ...rest }) => rest);
       toast('success', t('Records saved'), t('They answer after the next block.'));
       void refreshNames();

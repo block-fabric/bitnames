@@ -3,7 +3,7 @@
   // registrations under way, each with the block it waits for; names themselves never expire, so nothing
   // else falls due), and the names registered last. Each opens its page.
   import Icon from '../components/Icon.svelte';
-  import { t } from '../lib/i18n.svelte';
+  import { t, tn } from '../lib/i18n.svelte';
   import { go, goTo } from '../lib/nav.svelte';
   import { app, node, wallets } from '../lib/state.svelte';
   import Card from '../views/home/Card.svelte';
@@ -53,7 +53,7 @@
               <Domain name={r.name} />
               <span class="faint small">
                 {#if p.stage === 'confirm'}{t('waiting for a block')}
-                {:else if p.stage === 'wait'}{t('revealed in %1 block(s), %2', p.blocksLeft, blocksTime(p.blocksLeft ?? 0, spacing))}
+                {:else if p.stage === 'wait'}{tn('revealed in %n block(s), %1', p.blocksLeft ?? 0, blocksTime(p.blocksLeft ?? 0, spacing))}
                 {:else if r.step === 'reserved'}{t('ready to register')}
                 {:else}{t('registering, by block %1', p.deadline)}{/if}
               </span>
@@ -88,6 +88,34 @@
 {/if}
 
 <style>
+  .value {
+    display: block;
+    margin: 0.1rem 0 0.55rem;
+    font-size: 1.55rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+  .pairs {
+    display: grid;
+    grid-template-columns: minmax(min-content, 1fr) minmax(0, auto);
+    gap: 0.35rem 1rem;
+    margin: 0;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--line);
+  }
+  .pairs dt {
+    color: var(--text-muted);
+    font-size: 0.86rem;
+    overflow-wrap: break-word;
+  }
+  .pairs dd {
+    min-width: 0;
+    margin: 0;
+    text-align: right;
+    font-weight: 600;
+    font-size: 0.92rem;
+  }
   .bn-cards {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr));

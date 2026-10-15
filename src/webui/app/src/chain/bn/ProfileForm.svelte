@@ -7,10 +7,10 @@
   import Icon from '../../components/Icon.svelte';
   import SafeText from '../../components/SafeText.svelte';
   import { ask, errorText, inform, walletRpc } from '../../lib/dialogs.svelte';
-  import { t } from '../../lib/i18n.svelte';
+  import { t, tn } from '../../lib/i18n.svelte';
   import { toast, wallets } from '../../lib/state.svelte';
   import { DATA_FIELDS, dataProblem, dataText, dataUpdates, type DataField, type NameData } from './model';
-  import { refreshNames } from './store.svelte';
+  import { noteChange, refreshNames } from './store.svelte';
 
   let { handle, data, editable = false, onsaved = undefined }: { handle: string; data: NameData | undefined; editable?: boolean; onsaved?: () => void } = $props();
 
@@ -65,8 +65,8 @@
     const deleted = Object.entries(changes).filter(([, v]) => v === null).length;
     const r = await ask({
       title: t('Save the profile'),
-      message: t('Change %1 field(s) of this name?', Object.keys(changes).length),
-      informative: deleted ? t('%1 field(s) emptied are deleted from the name.', deleted) : t('The change is a transaction of the wallet: it shows after the next block.'),
+      message: tn('Change %n field(s) of this name?', Object.keys(changes).length),
+      informative: deleted ? tn('%n field(s) emptied are deleted from the name.', deleted) : t('The change is a transaction of the wallet: it shows after the next block.'),
       level: 'question',
       choices: [
         { id: 'no', label: 'Cancel' },
@@ -78,6 +78,7 @@
     try {
       const txid = await walletRpc<string>(wallet, 'updatename', [handle, changes]);
       if (txid === null) return;
+      noteChange(wallet, txid, handle.slice(2));
       toast('success', t('Profile saved'), t('It shows after the next block.'));
       void refreshNames();
       onsaved?.();
@@ -103,7 +104,7 @@
     <div class="row">
       <button type="submit" class="btn primary" id="profile-save" disabled={busy || !changed || bad}><Icon name="check" size={15} /> Save the profile</button>
       <button type="button" class="btn" onclick={newKeys}><Icon name="key" size={15} /> Use new keys of this wallet</button>
-      {#if changed}<span class="bn-hint">{t('%1 field(s) changed', Object.keys(changes).length)}</span>{/if}
+      {#if changed}<span class="bn-hint">{tn('%n field(s) changed', Object.keys(changes).length)}</span>{/if}
     </div>
   </form>
 {:else}
