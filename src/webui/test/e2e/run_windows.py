@@ -15,7 +15,7 @@ folder of the Windows user, and runs there, through the interop of WSL:
   - for the app of a sidechain (chain.json role "sidechain"), sidechain.js instead: the app on Windows
     following a regtest mainchain node run here in WSL (chainsd of --mainchain-bin, reached through the
     localhost of Windows), a deposit, merged mining, a withdrawal and its bundle paid (run_sidechain.py);
-    and the scripts of the chain's own pages the same way (hivemind.js), with --app-arg and --js-var
+    and the scripts of the chain's own pages the same way (bitnames.js), with --app-arg and --js-var
     as run_sidechain.py takes them.
 
 Nothing outside that folder is touched: the app settings file and the data of WebView2 are in it,
@@ -41,7 +41,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from run_smoke import script  # noqa: E402
 
-PORTS = {"smoke": 39470, "layouts": 39490, "titlebar": 39510, "walletcard": 39550, "sidechain": 39570, "hivemind": 39590}
+PORTS = {"smoke": 39470, "layouts": 39490, "titlebar": 39510, "walletcard": 39550, "sidechain": 39570, "bitnames": 39590}
 CHAIN = json.loads((HERE.parents[1] / "app/src/chain/chain.json").read_text())
 SIDECHAIN = CHAIN["role"] == "sidechain"
 
