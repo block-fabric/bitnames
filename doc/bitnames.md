@@ -12,8 +12,8 @@ server for the `.x` domain.
 - **Taking a name** takes two steps, so that nobody can see it coming and take it first. A
   *reservation* commits to the name without showing it (HMAC-SHA256, under a nonce only the wallet
   can make, of the name's hash and the script of the output that carries the reservation); once it
-  is deep enough in the chain, the *registration* reveals the nonce and creates the name. The window
-  ("Names", in the sidebar) does both steps.
+  is deep enough in the chain, the *registration* reveals the nonce and creates the name. The app
+  (`bitnames-app`, the page **Get a name**) does both steps as one flow, and follows it by itself.
 - **A reservation is revealed only once it is deep enough** (`reveal_depth` blocks: 6 on the main
   network, 3 on the test network and signet, 2 on regtest; `getbitnamesinfo` shows it): a
   registration in block *h* of a reservation made in block *r* needs *h - r* ≥ `reveal_depth`.
@@ -72,7 +72,7 @@ server for the `.x` domain.
 - **Giving a name on.** `transfername <name> <address>` also deletes, in the same transaction,
   the encryption key, the signing key and the paymail fee of the name: they are keys of the wallet
   that gives it, which would still receive the name's messages and sign as it. `false` as a third
-  argument keeps them (for a name moved to another wallet of the same owner). The window asks, with
+  argument keeps them (for a name moved to another wallet of the same owner). The app asks, with
   deleting them checked.
 - **Subnames.** The owner of `core` can make `blog.core` and give it to any address
   (`createsubname core blog <address>`). A subname is a name of its own: its holder sets its data

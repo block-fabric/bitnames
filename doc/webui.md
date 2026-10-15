@@ -12,8 +12,13 @@ integrated title bar: [webui-layouts.md](webui-layouts.md).
 This document says how to build and run it, and how it is made, so that the
 sidechains can take it over for their own apps.
 
-> **In this tree (the sidechain template).** The kit is the one of `chains-app`, made configurable: the
-> program is `<stem>-app` (here `sidechain-app`, and `test_sidechain-app`), and what the app shows of its
+> **In this tree (BitNames).** `bitnames-app` is the app of the sidechain template with the pages of
+> BitNames: getting a name, the names of the wallet, the directory, paymail and the DNS of `.x`. They are
+> described in [The pages of BitNames](#the-pages-of-bitnames); their inventory against the Qt GUI of
+> BitNames is section BN of [webui-parity.md](webui-parity.md).
+>
+> **From the sidechain template.** The kit is the one of `chains-app`, made configurable: the
+> program is `<stem>-app` (here `bitnames-app`, and `test_bitnames-app`), and what the app shows of its
 > chain is in one file, `src/webui/app/src/chain/chain.json`. The app of a sidechain has pages of its own
 > (Peg, Merged mining, its home, the Mainchain tab of Settings) in place of those of the mainchain
 > (Sidechains, Sidechain nodes, Solo mine). How, and how a sidechain adds its own pages so that the
@@ -369,7 +374,7 @@ files only through the native chooser; amounts with `Amount`; tables in the colo
 
 ### Pages of a chain of its own
 
-A sidechain made from the template (BitNames, BitAssets, Thunder...) adds its pages in three files the
+A sidechain made from the template (BitNames, BitAssets, Thunder...) adds its pages in five files the
 template keeps empty, and nowhere else, so that a merge of the template never conflicts with them:
 
 1. **src/webui/app/src/chain/local.ts**: an entry per page in `LOCAL_PAGES` (`id`, `title`, `icon`,
@@ -382,6 +387,10 @@ template keeps empty, and nowhere else, so that a merge of the template never co
 3. **src/webui/local.cpp**: the RPC methods the pages call (`RpcMethods`, added to the page's
    allowlist; those that need the keys in `KeyedRpcMethods`) and the host methods they need
    (`RegisterHost`, after the kit's).
+4. **src/webui/app/src/chain/icons.ts**: icons of its own (`LOCAL_ICONS`, SVG paths on the 24 grid of
+   the kit's), named in `local.ts` like the kit's.
+5. **src/webui/app/src/chain/LocalCards.svelte**: cards of its own on the home of the dashboard, after
+   the row of summary cards (views/home/Card.svelte).
 
 ```ts
 // chain/local.ts
@@ -394,6 +403,45 @@ Its own words follow the rules of the kit (`t()` for the app's words; `SafeText`
 the chain); its tests go in `src/chain/` too (`*.test.ts` are found anywhere under src). Nothing in
 `lib/`, `components/`, `pages/` or `views/` needs to change; when a page needs something the kit does
 not offer, make it a change of the template (generic, behind `chain.json`), and merge it.
+
+### The pages of BitNames
+
+In `src/webui/app/src/chain`: `local.ts` lists them (all in the Chain section, after Peg and Merged
+mining, before the explorer and the tools), `LocalPages.svelte` shows them, `LocalCards.svelte` puts
+their cards on the home of the dashboard, `icons.ts` draws their icons (a tag, a tag with a plus, a
+subname, the directory, an envelope, a globe); `pages/` holds the pages, `bn/` what they share
+(`model.ts`: the rules of names, queries, records and data, the steps of a registration;
+`store.svelte.ts`: the state that follows the chain; `NameView`, `RecordEditor`, `ProfileForm`,
+`StepTrack`, `Domain`; `bn.css`). The look of the app is the kit's; the mark of BitNames is a name tag
+in lavender (chain.json `brand`), the colour of the marks and lines of its pages (never of text).
+
+| Page | What it does |
+|---|---|
+| Get a name | One large field, `.x` after it. As the name is typed, the rules of the wallet (lower case, `a-z 0-9 - _`, at most 255; a label of a subname), then the registry (`getname`): free, taken (its number, block, holder), already yours. Public or private, an address to point it at. Then the whole of taking it as one flow: `reservename`, the block of the reservation (`gettransaction`), the `revealdepth` blocks it stays hidden, `registername` sent by the app once the next block may take it, the block that makes it yours; a track of five steps, the block of each and about how long, the block a registration should be in by. `blog.yours` makes a subname of a name of the wallet at once (`createsubname`) |
+| My names | The names, subnames and reservations of the wallet beside the one picked (`bn/NameView.svelte`). Records (`setnamerecords`): a row per record with the fields of its type, checked as typed and by the wallet's own rules (`bitnames.records.check`), the bytes of the 1024 a name holds, what each row answers for. Profile (`updatename`): the addresses, the commitment, the keys (new ones of the wallet, `getnewnamekeys`), the paymail fee. Subnames, and a new one for this wallet or an address. Give or release (`transfername`, its keys deleted by default; `releasename`, a box to tick). History (`getnamehistory`). Names are permanent: no expiry, nothing to renew |
+| Name directory | Every name, 50 at a time, newest first or oldest first; a search of the public names (`listnames` with its filter); a name by its text, subname, number (`#1739-0029`) or hash, shown whole and read only |
+| Paymail | Inbox (`listpaymail`; a locked wallet opens it only when asked), Send (`sendpaymail`, the fee of the name looked up as it is typed, the size of the message once encrypted), Encrypt and sign (`encryptnamemessage`, `decryptnamemessage`, `signasname`, `verifynamesignature`) |
+| DNS | The server of `.x` of this node (`-dnsbind`) on or off and where; the commands to send the `.x` questions of the computer to it, per system, to copy; a lookup tester (`resolvename`, the record type, the status in words) |
+| Home | Cards: My names, Coming up (the registrations under way and the block each waits for; names never expire), Registered last |
+
+**The registrations.** The text of a name a reservation hides is not on the chain until it is
+registered, and the wallet can only give it back while unlocked. The app keeps the names it is
+registering, with their step, in `bitnames-app.json` of the data directory of the network (host
+methods `bitnames.store.load` and `bitnames.store.save` in `src/webui/local.cpp`; written whole and
+flushed before it replaces the old file; a file that cannot be read is kept aside as
+`<file>.unreadable`), as chains-qt kept them in its settings: a registration goes on after a restart,
+from the home as from its page. A wallet that needs a passphrase waits for the user ("Register now");
+a name someone else registered first stops it (its reservation can be released); a registration that
+drops is sent again.
+
+**Changes waiting for a block.** The wallet does not list a name while the output that carries it is
+spent by a transaction not in a block: after a change the name stays in My names, marked, until the
+change is in a block (`noteChange`).
+
+The rules of the kit hold: text of the chain (names, labels, records, keys, messages, addresses) with
+`SafeText` or `translate="no"`, the app's words through `t()` and `tn()`, no inline style (bars set
+through the CSS object model), colours from the tokens of the themes; every RPC method the pages call
+is on the allowlist of `local.cpp`, those that sign, make keys or open a message as keyed methods.
 
 ## Tests
 
@@ -412,6 +460,9 @@ not offer, make it a change of the template (generic, behind `chain.json`), and 
 | `e2e/run_sidechain.py` | A sidechain (`webui_e2e_sidechain`, with `WEBUI_MAINCHAIN_BIN_DIR` or `MAINCHAIN_BIN_DIR` naming the folder of `chainsd`): a regtest mainchain started and mining a block every second, the sidechain activated in its slot, the app following it with a user name and a password file; through the page: a deposit address, the deposit made by the helper, merged mining on, the deposit credited, a withdrawal to an address of the mainchain wallet, its bundle voted on and paid (checked on the mainchain); pictures of the pages of the sidechain in the layouts and looks |
 | `e2e/run_release.py` | The release as a user gets it (`deploy-app`, built with `WEBUI_TEST_HOOKS=OFF`; `--windows` for the zip, run on the Windows of the machine): what the package holds and SHA256SUMS, no hooks of the tests in the app; the app run with no test script on regtest against a live mainchain, its node answering the command line program of the package, following the mainchain in its slot, and stopping cleanly |
 | `test_<stem>-app`: chainconfig_tests, sidechainapi_tests | chain.json against the chain parameters (names, unit, ports, prefixes); the methods of the mainchain the pages may call, the deposit helper refusing what is not a deposit address of this sidechain, the RPC policy of a sidechain |
+| `npm test`: chain/bitnames.test.ts | BitNames: the rules of names, queries, records (each type) and data, the updates sent, the steps of a registration and their deadlines; the pages driven against a pretend node: a name free or taken as it is typed, reserved, then registered by the store block by block (kept by the host), a locked wallet waiting, a name taken meanwhile, a subname; My names (records refused as typed then saved, the profile with new keys and a fee deleted, a subname, giving away, releasing with the box, a name whose change waits for a block, a new block keeping what is typed); the directory; paymail (the inbox shown as it is, a paid message, signing and checking, a locked wallet); DNS; the cards of the home; the pages in the menus before the tools; markup and a name that turns text around shown as they are |
+| `test_bitnames-app`: local_tests | The store of the registrations (written whole, kept aside if unreadable), the checks of record rows with the wallet's words, whether rows stand for records, the methods of the pages and those that need keys |
+| `e2e/run_sidechain.py --script bitnames.js --app-arg=-dnsbind=127.0.0.1:<port>` (ctest `webui_e2e_bitnames`) | BitNames on regtest against a live mainchain: a deposit, merged mining; a name found free and taken by the app in two steps; records refused as typed then saved and answered by the DNS of the node, new keys and a paymail fee, a subname; a paid message sent and read; the DNS page and a lookup; the directory; the subname given to another wallet; pictures of every page in Midnight and Light, the dashboard and the workspace |
 | `npm test`: test/sidechain.test.ts | The chain of chain.json (units, URIs, addresses of both chains), the pages dropped, Peg and Merged mining in the Chain section and the menus, the events of the mainchain kept up to date across a reorganisation, the bundles, deposits and commitments, the log of merged mining, and the pages driven: the deposit helper, a withdrawal and its refund, the votes of the bundle, merged mining on and off and one block by hand, the cards of the home, the Mainchain settings |
 
 Each e2e script takes `--app build/bin/chains-app --tmp <dir> --shots <dir>`;
