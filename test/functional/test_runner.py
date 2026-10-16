@@ -173,6 +173,8 @@ BASE_SCRIPTS = [
     'feature_bitnames_rejects.py',
     'feature_sidechain_network.py',
     'feature_sidechain_headers.py',
+    'feature_sidechain_catchup.py',
+    'feature_sidechain_prune.py',
     'feature_sidechain_follower.py',
     'feature_sidechain_rules.py',
     'feature_sidechain_record.py',
