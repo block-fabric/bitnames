@@ -1,5 +1,5 @@
-// BitNames in Simple mode (run_sidechain.py --script bitnames_simple.js --js-var SIMPLE=true): the default of
-// a first start. The wallet gets coins; another wallet takes "hal" by its RPC; then Get a name takes "satoshi"
+// BitNames in Simple mode (run_sidechain.py --script bitnames_simple.js --js-var SIMPLE=true): as a user chooses it;
+// (a first start is in Advanced). The wallet gets coins; another wallet takes "hal" by its RPC; then Get a name takes "satoshi"
 // through the page, in plain words, and My names shows it in a few words, its records behind More. Pictures in
 // the Midnight and Light themes: Home, Get a name (a free name, one taken, one already yours), My names.
 (async () => {
@@ -31,7 +31,7 @@
 
   try {
     await waitFor('the node to run', () => T() && T().app.phase === 'ready' && T().node.tip, 120000);
-    await check('Advanced on a first start (user decision), Simple once chosen', window.__E2E_FIRST_MODE === 'advanced' \&\& T().prefs.uiMode === 'simple', `${window.__E2E_FIRST_MODE} ${T().prefs.uiMode}`);
+    await check('Advanced on a first start (user decision), Simple once chosen', window.__E2E_FIRST_MODE === 'advanced' && T().prefs.uiMode === 'simple', `${window.__E2E_FIRST_MODE} ${T().prefs.uiMode}`);
     await waitFor('the node to reach the mainchain', async () => (await rpc('getmainchaininfo')).connected, 60000);
 
     // --- Coins, and a name taken by someone else ---
