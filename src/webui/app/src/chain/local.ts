@@ -35,9 +35,9 @@ export interface LocalPage {
 export const LOCAL_PAGES = [
   { id: 'register', title: 'Get a name', icon: 'tagplus', section: 'chain', summary: 'Find a name that is free and take it: reserved, then registered, step by step', wallet: true, keywords: 'bitnames register reserve search available domain buy claim', quick: { label: 'Get a name', icon: 'tagplus' } },
   { id: 'names', title: 'My names', icon: 'tag', section: 'chain', shortcut: 'Alt+6', summary: 'The names of the wallet: DNS records, profile and keys, subnames, giving away, releasing', wallet: true, keywords: 'bitnames records dns subnames transfer release keys profile' },
-  { id: 'directory', title: 'Name directory', icon: 'atlas', section: 'chain', summary: 'Every name of the registry: search, browse, and see any name whole', keywords: 'bitnames explore search lookup whois registry' },
-  { id: 'paymail', title: 'Paymail', icon: 'mail', section: 'chain', summary: 'Messages with a payment that only the holder of a name reads; encrypt and sign as a name', wallet: true, keywords: 'bitnames paid messages encrypt decrypt sign verify inbox', quick: { label: 'Paymail', icon: 'mail', tab: 'send' } },
-  { id: 'dns', title: 'DNS', icon: 'globe', section: 'chain', summary: 'The DNS server of .x names on this node, and a lookup tester', keywords: 'bitnames dnsbind resolve lookup resolver .x domain' },
+  { id: 'directory', title: 'Name directory', icon: 'atlas', section: 'chain', summary: 'Every name of the registry: search, browse, and see any name whole', keywords: 'bitnames explore search lookup whois registry', advanced: true },
+  { id: 'paymail', title: 'Paymail', icon: 'mail', section: 'chain', summary: 'Messages with a payment that only the holder of a name reads; encrypt and sign as a name', wallet: true, keywords: 'bitnames paid messages encrypt decrypt sign verify inbox', quick: { label: 'Paymail', icon: 'mail', tab: 'send' }, advanced: true },
+  { id: 'dns', title: 'DNS', icon: 'globe', section: 'chain', summary: 'The DNS server of .x names on this node, and a lookup tester', keywords: 'bitnames dnsbind resolve lookup resolver .x domain', advanced: true },
 ] as const satisfies readonly LocalPage[];
 
 export type LocalPageId = (typeof LOCAL_PAGES)[number]['id'];

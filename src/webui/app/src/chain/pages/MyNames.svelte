@@ -3,6 +3,7 @@
   // whole and editable (NameView: records, profile, subnames, giving away or releasing, history). Names are
   // permanent: nothing to renew, and no expiry to watch. The "My names" tab of the Names page of chains-qt.
   import Icon from '../../components/Icon.svelte';
+  import { simpleMode } from '../../lib/uimode.svelte';
   import NoWallet from '../../components/NoWallet.svelte';
   import SafeText from '../../components/SafeText.svelte';
   import { ask, errorText, inform, walletRpc } from '../../lib/dialogs.svelte';
@@ -81,6 +82,8 @@
       await inform(t('Release the reservation'), errorText(e), 'error');
     }
   }
+  // Simple mode (lib/uimode.svelte.ts): the name in plain words; records, keys and the rest behind More or in Advanced.
+  const simple = $derived(simpleMode());
 </script>
 
 <div class="page bn-page my-names">
@@ -112,7 +115,7 @@
                 <span class="bn-glyph" aria-hidden="true"><Icon name={isSub(m) ? 'subname' : 'tag'} size={16} /></span>
                 <span class="main">
                   <Domain name={m.name} seq={m.seq} />
-                  <span class="sub">{isSub(m) ? t('Subname') : t('Name')} · <span translate="no">#{m.seq ?? '–'}</span>{#if m.leaving} · {t('leaving with the next block')}{:else if m.waiting} · {t('a change waits for a block')}{/if}</span>
+                  <span class="sub">{isSub(m) ? t('Subname') : t('Name')}{#if !simple} · <span translate="no">#{m.seq ?? '–'}</span>{/if}{#if m.leaving} · {t('leaving with the next block')}{:else if m.waiting} · {t('a change waits for a block')}{/if}</span>
                 </span>
               </button>
             </li>
@@ -160,8 +163,10 @@
             <dl class="facts">
               <dt>Held by</dt>
               <dd class="mono"><SafeText text={pickedReservation.address} /></dd>
-              <dt>Transaction</dt>
-              <dd class="mono" translate="no">{shortHash(pickedReservation.txid, 12)}</dd>
+              {#if !simple}
+                <dt>Transaction</dt>
+                <dd class="mono" translate="no">{shortHash(pickedReservation.txid, 12)}</dd>
+              {/if}
             </dl>
             <div class="row">
               <button type="button" class="btn" onclick={() => go('register')}>Registrations</button>

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { stacked } from '../../lib/actions';
+  import Term from '../../components/Term.svelte';
+  import { simpleMode } from '../../lib/uimode.svelte';
   // Get a name: one field, and whether the name can be had as it is typed (the rules of the wallet first,
   // then the registry); then the whole of taking it, as one flow the app follows by itself: the reservation
   // that hides the name, the blocks it has to stay hidden (revealdepth), the registration that reveals it,
@@ -219,6 +221,8 @@
 
   // Reservations of the wallet this app is not following (made in the console, or by chains-qt).
   const strays = $derived(bn.mine.filter((m) => m.kind === 'reservation' && !mine.some((r) => r.reserveTxid === m.txid)));
+  // Simple mode (lib/uimode.svelte.ts): the name in plain words; records, keys and the rest behind More or in Advanced.
+  const simple = $derived(simpleMode());
 </script>
 
 <div class="page bn-page register">
@@ -261,13 +265,16 @@
           </div>
           <form class="bn-form options" onsubmit={(e) => { e.preventDefault(); getIt(); }}>
             {#if verdict.kind === 'free'}
+              {#if simple}<p class="bn-hint cost">What it costs: nothing but two small network <Term id="fee">fees</Term>, paid by this wallet. The name is yours for good: nothing to renew.</p>{/if}
               <label class="switch"><input type="checkbox" bind:checked={makePublic} id="name-public" /><span class="track"></span><span>Public</span></label>
               <p class="bn-hint">{makePublic ? t('Its text is on the chain: anyone can find it by name and see it listed.') : t('Only its hash is on the chain: it works the same, but only those who know the name can find it.')}</p>
+              {#if !simple}
               <label class="field">
                 <span class="label">Point it at (optional)</span>
                 <input id="name-ipv4" type="text" class="mono" placeholder="203.0.113.7" bind:value={ipv4} spellcheck="false" autocomplete="off" aria-invalid={ipProblem ? 'true' : undefined} />
                 {#if ipProblem}<span class="error">{ipProblem}</span>{:else}<span class="hint">An IPv4 address the name answers with. Records, keys and more can be set once it is yours.</span>{/if}
               </label>
+              {/if}
             {:else}
               <AddressInput id="name-holder" label="Held by (empty: this wallet)" bind:value={holder} bind:valid={holderValid} required={false} />
             {/if}
@@ -286,7 +293,7 @@
     </section>
 
     <section class="panel" aria-label="Registrations">
-      <div class="panel-head"><h2>Registrations</h2>{#if bn.info}<span class="muted small">{tn('Reveal depth: %n block(s)', depth)}</span>{/if}</div>
+      <div class="panel-head"><h2>Registrations</h2>{#if bn.info && !simple}<span class="muted small">{tn('Reveal depth: %n block(s)', depth)}</span>{/if}</div>
       {#if mine.length === 0 && strays.length === 0}
         <p class="bn-empty">None under way. A name you get shows here, step by step, until it is yours.</p>
       {:else}
@@ -305,19 +312,19 @@
               <div class="row">
                 {#if r.step === 'reserved' && p.stage === 'register'}<button type="button" class="btn primary small" disabled={busy} onclick={() => registerManually(r)}>Register now</button>{/if}
                 {#if r.step === 'done'}
-                  <button type="button" class="btn small" onclick={() => openName(r)}>Records and more</button>
+                  <button type="button" class="btn small" onclick={() => openName(r)}>{simple ? 'See it' : 'Records and more'}</button>
                   <button type="button" class="btn small ghost" onclick={() => forget(r)}>Dismiss</button>
                 {:else if r.step === 'failed'}
                   <button type="button" class="btn small ghost" disabled={busy} onclick={() => giveUp(r)}>{r.reserveHeight !== undefined ? t('Release the reservation') : t('Dismiss')}</button>
                 {:else if r.step === 'reserved'}
                   <button type="button" class="btn small ghost" disabled={busy} onclick={() => giveUp(r)}>Give it up</button>
                 {/if}
-                <span class="faint small mono" translate="no">{shortHash(r.registerTxid ?? r.reserveTxid, 8)}</span>
+                {#if !simple}<span class="faint small mono" translate="no">{shortHash(r.registerTxid ?? r.reserveTxid, 8)}</span>{/if}
               </div>
             </li>
           {/each}
         </ul>
-        {#if strays.length}
+        {#if strays.length && !simple}
           <div class="panel-body">
             <h3>Other reservations of this wallet</h3>
             <p class="bn-hint">Made outside this page (the console, another app): register them with registername, or release them in My names.</p>

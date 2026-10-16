@@ -3,6 +3,7 @@
   // registrations under way, each with the block it waits for; names themselves never expire, so nothing
   // else falls due), and the names registered last. Each opens its page.
   import Icon from '../components/Icon.svelte';
+  import { simpleMode } from '../lib/uimode.svelte';
   import { t, tn } from '../lib/i18n.svelte';
   import { go, goTo } from '../lib/nav.svelte';
   import { app, node, wallets } from '../lib/state.svelte';
@@ -26,6 +27,8 @@
       .sort((a, b) => (a.p.blocksLeft ?? 0) - (b.p.blocksLeft ?? 0))
       .slice(0, 3),
   );
+  // Simple mode (lib/uimode.svelte.ts): the name in plain words; records, keys and the rest behind More or in Advanced.
+  const simple = $derived(simpleMode());
 </script>
 
 {#if bn.loaded && !bn.error}
@@ -35,11 +38,11 @@
       <dl class="pairs">
         <dt>Subnames</dt><dd class="num">{subs}</dd>
         <dt>Being registered</dt><dd class="num">{registrationsOf(wallets.current).filter((r) => r.step === 'reserved' || r.step === 'registering').length}</dd>
-        <dt>DNS of .x</dt><dd>{bn.info?.dns ? t('on') : t('off')}</dd>
+        {#if !simple}<dt>DNS of .x</dt><dd>{bn.info?.dns ? t('on') : t('off')}</dd>{/if}
       </dl>
       {#snippet actions()}
         <button type="button" class="btn grow" onclick={() => go('register')}><Icon name="tagplus" size={15} /> Get a name</button>
-        <button type="button" class="btn ghost" onclick={() => go('names', 'records')}>Records</button>
+        {#if simple}<button type="button" class="btn ghost" onclick={() => go('names')}>My names</button>{:else}<button type="button" class="btn ghost" onclick={() => go('names', 'records')}>Records</button>{/if}
       {/snippet}
     </Card>
 
@@ -66,6 +69,7 @@
       {/snippet}
     </Card>
 
+    {#if !simple}
     <Card title="Registered last" icon="atlas" open={() => go('directory')} openLabel="Open the name directory" stat>
       {#if bn.recent.length === 0}
         <p class="muted">No names yet.</p>
@@ -84,6 +88,7 @@
         <button type="button" class="btn ghost" onclick={() => go('dns')}>DNS</button>
       {/snippet}
     </Card>
+    {/if}
   </div>
 {/if}
 

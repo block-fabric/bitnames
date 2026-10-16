@@ -2,3 +2,6 @@
 # (webui_local_e2e of test/CMakeLists.txt, from the template).
 # bitnames.js: a name taken, set up, paid and given, with the DNS server of the node on.
 webui_local_e2e(bitnames 29780 --app-arg=-dnsbind=127.0.0.1:29786)
+# bitnames_simple.js: Simple mode, the default of a first start: Get a name in plain words (free, taken, yours),
+# My names in a few words, in Midnight and Light.
+webui_local_e2e(bitnames_simple 41860 --js-var SIMPLE=true)

@@ -640,3 +640,68 @@ describe('the pages of BitNames', () => {
     expect(evil.getAttribute('translate')).toBe('no');
   });
 });
+
+// Simple mode (lib/uimode.svelte.ts, user decision 2026-10-16): Get a name first, in plain words (free or not,
+// what it costs); My names in a few words, records and keys behind More; the directory, paymail and DNS in
+// Advanced. The calls are those of Advanced.
+describe('Simple mode on BitNames', () => {
+  beforeEach(() => {
+    prefs.uiMode = 'simple';
+  });
+
+  it('Get a name first; the directory, paymail and DNS leave the navigation', async () => {
+    const { pageShown } = await import('../lib/uimode.svelte');
+    expect(pageShown('register' as never)).toBe(true);
+    expect(pageShown('names' as never)).toBe(true);
+    for (const id of ['directory', 'paymail', 'dns']) expect(pageShown(id as never), id).toBe(false);
+    expect(NAV_SECTIONS.find((s) => s.title === 'Chain')!.pages.indexOf('register' as never)).toBeLessThan(NAV_SECTIONS.find((s) => s.title === 'Chain')!.pages.indexOf('names' as never));
+    expect(buildCommands().some((c) => c.id === 'page.paymail')).toBe(true);
+  });
+
+  it('Get a name: free or taken, what it costs, and taken with the call of Advanced', async () => {
+    render(Register);
+    render(DialogHost);
+    await loaded();
+    const search = document.querySelector<HTMLInputElement>('#name-search')!;
+    await fireEvent.input(search, { target: { value: 'bob' } });
+    await waitFor(() => expect(screen.getByText(/Taken/)).toBeTruthy());
+    await fireEvent.input(search, { target: { value: 'carol' } });
+    await waitFor(() => expect(screen.getByText('is free')).toBeTruthy());
+    expect(screen.getByText(/What it costs: nothing but two small network/)).toBeTruthy();
+    expect(document.querySelector('#name-ipv4')).toBeNull();
+    await fireEvent.click(document.querySelector('#name-get')!);
+    await answer('yes');
+    await waitFor(() => expect(called('reservename').length).toBe(1));
+    expect(called('reservename')[0].params).toEqual(['carol']);
+    await waitFor(() => expect((store as { registrations: Registration[] }).registrations).toMatchObject([{ wallet: 'w', name: 'carol', public: true, step: 'reserved' }]));
+    expect(screen.queryByText(/Reveal depth/)).toBeNull();
+  });
+
+  it('My names: the name in a few words, its records behind More, given away with the call of Advanced', async () => {
+    render(MyNames);
+    render(DialogHost);
+    await loaded();
+    const view = await waitFor(() => screen.getByRole('region', { name: 'A name' }));
+    await waitFor(() => expect(within(view).getByText(/yours for good/)).toBeTruthy());
+    expect(within(view).queryByRole('tab', { name: 'Records' })).toBeNull();
+    expect(within(view).queryByText('Hash')).toBeNull();
+    await fireEvent.click(within(view).getByRole('button', { name: 'Give it away…' }));
+    await waitFor(() => expect(document.querySelector('#give-to')).not.toBeNull());
+    await fireEvent.input(document.querySelector('#give-to')!, { target: { value: OTHER } });
+    await waitFor(() => expect((document.querySelector('#give-send') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(document.querySelector('#give-send')!);
+    await answer('yes');
+    await waitFor(() => expect(called('transfername').length).toBe(1));
+    expect(called('transfername')[0].params).toEqual([`0x${hash('a')}`, OTHER, true]);
+    // More: every tab of Advanced.
+    await fireEvent.click(within(view).getByRole('tab', { name: 'Records' }));
+    expect(within(view).getAllByRole('tab').length).toBe(5);
+  });
+
+  it('the cards of the home: my names and what is coming up', async () => {
+    render(LocalCards);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'My names' })).toBeTruthy());
+    expect(screen.queryByRole('heading', { name: 'Registered last' })).toBeNull();
+    expect(screen.queryByText('DNS of .x')).toBeNull();
+  });
+});

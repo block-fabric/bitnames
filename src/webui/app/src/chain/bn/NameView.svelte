@@ -20,6 +20,7 @@
   import RecordEditor from './RecordEditor.svelte';
   import { handleOf, isLabel, type NameHistory, type NameInfo } from './model';
   import { bn, noteChange, refreshNames } from './store.svelte';
+  import { simpleMode } from '../../lib/uimode.svelte';
 
   let {
     handle,
@@ -45,6 +46,11 @@
   let parentInfo = $state<NameInfo | null>(null);
 
   const text = $derived(info?.name ?? knownText ?? null);
+  // Simple mode (lib/uimode.svelte.ts): the name in a few plain words; its records, profile, keys, subnames and
+  // history behind "More" (Advanced shows them at once).
+  const simple = $derived(simpleMode());
+  let more = $state(false);
+  const showMore = $derived(!simple || more);
   const TABS = $derived([
     { id: 'records', label: 'Records' },
     { id: 'profile', label: 'Profile' },
@@ -256,7 +262,7 @@
         <Domain name={text} seq={info.seq} big />
         <div class="tags">
           <span class="badge accent">{info.parent ? t('Subname') : t('Name')}</span>
-          <span class="badge" translate="no">#{info.seq}</span>
+          {#if !simple}<span class="badge" translate="no">#{info.seq}</span>{/if}
           <span class="badge">{info.name ? t('Public') : t('Private')}</span>
           {#if info.icann}<span class="badge warning">ICANN <SafeText text={info.icann} /></span>{/if}
           <span class="badge" title={t('Names never expire: they are held until given away or released.')}>{t('Permanent')}</span>
@@ -267,8 +273,10 @@
         <dd>{#if info.owner.address}<span class="mono"><SafeText text={info.owner.address} /></span> <CopyButton text={info.owner.address} label="Copy the address" />{:else}–{/if}</dd>
         <dt>Registered</dt>
         <dd class="num">{t('in block %1', info.registered)}</dd>
-        <dt>Hash</dt>
-        <dd><span class="mono" title={info.namehash} translate="no">{shortHash(info.namehash, 10)}</span> <CopyButton text={handleOf(info.namehash)} label="Copy the hash" /></dd>
+        {#if !simple}
+          <dt>Hash</dt>
+          <dd><span class="mono" title={info.namehash} translate="no">{shortHash(info.namehash, 10)}</span> <CopyButton text={handleOf(info.namehash)} label="Copy the hash" /></dd>
+        {/if}
         {#if info.parent}
           <dt>Under</dt>
           <dd>{#if parentInfo}<Domain name={parentInfo.name} seq={parentInfo.seq} />{:else}<span class="mono" translate="no">{shortHash(info.parent, 10)}</span>{/if}</dd>
@@ -282,9 +290,19 @@
       <p class="side-note bn-subnote">A subname depends on its parent: if the holder of the parent releases it, this subname is released with it, and a delegation in the records of the parent takes its domain elsewhere. Only its holder updates it, gives it on or makes subnames of it.</p>
     {/if}
     <div class="panel-body">
-      <TabRow label="The name" tabs={TABS} current={tab} select={(id) => (tab = id)} />
+      {#if showMore}<TabRow label="The name" tabs={TABS} current={tab} select={(id) => (tab = id)} />{/if}
 
-      {#if tab === 'records'}
+      {#if !showMore}
+        <div class="bn-simple">
+          <p>{editable ? t('This name is yours for good: there is nothing to renew. It can point to your servers, hold your keys and take paid messages.') : t('This name is registered: its holder keeps it for good.')}</p>
+          <div class="row">
+            <button type="button" class="btn" onclick={() => (more = true)}>More: records, profile and keys, subnames</button>
+            {#if editable}
+              <button type="button" class="btn ghost" onclick={() => { more = true; tab = 'transfer'; }}>Give it away…</button>
+            {/if}
+          </div>
+        </div>
+      {:else if tab === 'records'}
         <RecordEditor {handle} name={text} records={info.data?.records} {editable} />
       {:else if tab === 'profile'}
         <ProfileForm {handle} data={info.data} {editable} />
@@ -365,6 +383,14 @@
 </section>
 
 <style>
+  .bn-simple {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .bn-simple p {
+    margin: 0;
+  }
   .bn-subnote {
     margin: 0 1.3rem 0.4rem;
   }
