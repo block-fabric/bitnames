@@ -269,8 +269,10 @@
         </div>
       </div>
       <dl class="facts small">
-        <dt>Held by</dt>
-        <dd>{#if info.owner.address}<span class="mono"><SafeText text={info.owner.address} /></span> <CopyButton text={info.owner.address} label="Copy the address" />{:else}–{/if}</dd>
+        {#if !simple}
+          <dt>Held by</dt>
+          <dd>{#if info.owner.address}<span class="mono"><SafeText text={info.owner.address} /></span> <CopyButton text={info.owner.address} label="Copy the address" />{:else}–{/if}</dd>
+        {/if}
         <dt>Registered</dt>
         <dd class="num">{t('in block %1', info.registered)}</dd>
         {#if !simple}

@@ -248,8 +248,12 @@
           <div class="bn-verdict taken" role="status">
             <Icon name="lock" size={20} />
             <div class="grow">
-              <strong>{t('Taken')} · <Domain name={verdict.info.name ?? typed} /> <span class="faint" translate="no">#{verdict.info.seq}</span></strong>
-              <span class="why">{t('Registered in block %1', verdict.info.registered)}{#if verdict.info.owner.address} · {t('held by')} <span class="mono"><SafeText text={shortHash(verdict.info.owner.address, 10)} /></span>{/if}</span>
+              <strong>{t('Taken')} · <Domain name={verdict.info.name ?? typed} />{#if !simple} <span class="faint" translate="no">#{verdict.info.seq}</span>{/if}</strong>
+              {#if simple}
+                <span class="why">{t('Someone else holds this name for good: try another one.')}</span>
+              {:else}
+                <span class="why">{t('Registered in block %1', verdict.info.registered)}{#if verdict.info.owner.address} · {t('held by')} <span class="mono"><SafeText text={shortHash(verdict.info.owner.address, 10)} /></span>{/if}</span>
+              {/if}
             </div>
             <button type="button" class="btn small" onclick={() => verdict.kind === 'taken' && goTo('directory', '', handleOf(verdict.info.namehash))}>See it</button>
           </div>

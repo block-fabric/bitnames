@@ -25,7 +25,7 @@
       if (hide) hide.click();
     }
     await sleep(500);
-    await snapshot(name);
+    await snapshot(`bns-${name.replace(/^bn-simple-/, '')}`);
   }
   const getname = (n) => rpc('getname', [n]).catch(() => null);
 
