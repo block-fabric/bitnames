@@ -14,8 +14,11 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
+class uint256;
 namespace interfaces {
+class Chain;
 class Node;
 } // namespace interfaces
 
@@ -61,6 +64,13 @@ void WriteStore(const fs::path& path, const UniValue& value);
 UniValue CheckRecordRows(const UniValue& rows);
 /** Whether the rows of these records (the JSON of a name's data) give them back, so that an editor of rows may save them. */
 bool RecordsEditable(const UniValue& records);
+
+/**
+ * What each output of the coinbase of a block of the wallet pays, by the chain's own words (a short id,
+ * "" for an output it has nothing to say of): the history shows such an output by its role rather than
+ * "Mined" (chain/roles.ts, COINBASE_ROLES). The template has none: empty.
+ */
+std::vector<std::string> CoinbaseRoles(interfaces::Chain& chain, const uint256& block);
 
 } // namespace webui::local
 
