@@ -103,6 +103,16 @@ export function isGoodName(text: string): boolean {
   return /^[a-z0-9_-]{1,255}$/.test(text);
 }
 
+/**
+ * Whether a label of the text starts with xn-- (IDNA punycode): browsers may show it as letters of another
+ * script that look like another name, so the wallet makes no such names or subnames (IsPunycodeName).
+ */
+export function isPunycode(text: string): boolean {
+  return text.split('.').some((l) => l.toLowerCase().startsWith('xn--'));
+}
+
+const PUNYCODE = () => t('A name starting with xn-- can show in browsers as letters of another script, a look-alike of another name: the wallet does not make it.');
+
 /** A label of a subname: 1 to 63 lower-case letters, digits and hyphens, not at either end (IsDnsLabel). */
 export function isLabel(text: string): boolean {
   return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(text);
@@ -148,6 +158,7 @@ export function newNameProblem(raw: string): string {
   if (name.toLowerCase() !== name) return t('Names are lower case, as DNS looks them up: %1', name.toLowerCase());
   if (name.length > 255) return t('A name is at most 255 characters.');
   if (!isGoodName(name)) return t('A name is lower-case letters, digits, - and _.');
+  if (isPunycode(name)) return PUNYCODE();
   return '';
 }
 
@@ -159,6 +170,7 @@ export function subnameProblem(raw: string): string {
   const label = text.slice(0, dot);
   const parent = text.slice(dot + 1);
   if (!isLabel(label)) return t('A label is 1 to 63 lower-case letters, digits and hyphens, not at either end.');
+  if (isPunycode(label)) return PUNYCODE();
   if (!parent || !parent.split('.').every((l) => isGoodName(l))) return t('The name it goes under is lower-case letters, digits, - and _.');
   if (parent.split('.').length >= MAX_DEPTH + 1) return t('A subname is at most %1 levels under its top-level name.', MAX_DEPTH);
   return '';
@@ -249,6 +261,33 @@ export function rowProblem(row: RecordRow): string {
       return '';
   }
   return t('Record types: A, AAAA, CNAME, TXT, MX, SRV, NS, TLSA, DELEGATE');
+}
+
+/**
+ * Whether an address is one of a private or local network (or this computer): a name may point there, but
+ * the pages of whoever holds the name can then reach that network from a browser (DNS rebinding).
+ */
+export function isPrivateAddress(text: string): boolean {
+  const a = text.trim().toLowerCase();
+  if (isIPv4(a)) {
+    const [x, y] = a.split('.').map(Number);
+    return x === 10 || x === 127 || x === 0 || (x === 169 && y === 254) || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 100 && y >= 64 && y <= 127);
+  }
+  if (isIPv6(a)) {
+    if (a === '::1' || a === '::') return true;
+    if (/^f[cd][0-9a-f]{0,2}:/.test(a) || /^fe[89ab][0-9a-f]?:/.test(a)) return true;
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a);
+    return mapped ? isPrivateAddress(mapped[1]) : false;
+  }
+  return false;
+}
+
+/** A note on a row that is valid but may not be what is meant ('' when none). */
+export function rowWarning(row: RecordRow): string {
+  if ((row.type === 'A' || row.type === 'AAAA') && isPrivateAddress(row.value)) {
+    return t('A private or local address: only computers on that network reach it, and web pages under the name can reach that network.');
+  }
+  return '';
 }
 
 /** A row as setnamerecords takes it (the fields of its type only). */

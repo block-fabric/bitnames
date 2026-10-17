@@ -11,7 +11,7 @@
   import { t, tn } from '../../lib/i18n.svelte';
   import { rpc } from '../../lib/rpc';
   import { toast, wallets } from '../../lib/state.svelte';
-  import { MAX_RECORDS_BYTES, RECORD_TYPES, rowDomain, rowForWallet, rowProblem, rowsFrom, type RecordRow, type RecordType } from './model';
+  import { MAX_RECORDS_BYTES, RECORD_TYPES, rowDomain, rowForWallet, rowProblem, rowsFrom, rowWarning, type RecordRow, type RecordType } from './model';
   import { noteChange, refreshNames } from './store.svelte';
 
   let {
@@ -175,6 +175,8 @@
         {/if}
         {#if problems[i] && canEdit}
           <span class="problem">{problems[i]}</span>
+        {:else if rowWarning(row)}
+          <span class="problem warn">{rowWarning(row)}</span>
         {:else if name}
           <span class="answers">{t('Answers for')} <SafeText text={rowDomain(row, name)} /></span>
         {/if}

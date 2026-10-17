@@ -19,11 +19,13 @@ import {
   dataProblem,
   dataUpdates,
   isIPv6,
+  isPrivateAddress,
   newNameProblem,
   progressOf,
   queryKind,
   rowForWallet,
   rowProblem,
+  rowWarning,
   subnameProblem,
   withoutTld,
   type MyName,
@@ -232,6 +234,23 @@ describe('the rules of names, as the wallet checks them', () => {
     expect(subnameProblem('-blog.alice')).toMatch(/label/);
     expect(subnameProblem('blog.Alice')).toMatch(/goes under/);
     expect(subnameProblem(`a.${Array(9).fill('b').join('.')}`)).toMatch(/8 levels/);
+  });
+
+  it('refuses xn-- (punycode) names and subnames, as the wallet does (audit 7 E-BN7)', () => {
+    expect(newNameProblem('xn--pple-43d')).toMatch(/xn--/);
+    expect(newNameProblem('xnapple')).toBe('');
+    expect(subnameProblem('xn--pple-43d.alice')).toMatch(/xn--/);
+    expect(subnameProblem('blog.alice')).toBe('');
+  });
+
+  it('warns about private and local addresses in records (audit 7 E-BN4)', () => {
+    for (const a of ['10.1.2.3', '127.0.0.1', '192.168.1.1', '172.16.0.1', '172.31.255.255', '169.254.1.1', '100.64.0.1', '::1', 'fd00::1', 'fe80::1', '::ffff:192.168.0.1']) {
+      expect(isPrivateAddress(a), a).toBe(true);
+    }
+    for (const a of ['203.0.113.7', '172.32.0.1', '8.8.8.8', '2001:db8::7', '::ffff:8.8.8.8']) expect(isPrivateAddress(a), a).toBe(false);
+    expect(rowWarning({ host: '@', type: 'A', value: '192.168.1.10' })).toMatch(/private/);
+    expect(rowWarning({ host: '@', type: 'A', value: '203.0.113.7' })).toBe('');
+    expect(rowWarning({ host: '@', type: 'TXT', value: '10.0.0.1' })).toBe('');
   });
 
   it('checks records as they are typed, row by row', () => {

@@ -314,6 +314,9 @@
   color: var(--negative);
   font-size: 0.84rem;
 }
+.bn-record .problem.warn {
+  color: var(--warning);
+}
 .bn-record .answers {
   grid-column: 1 / -1;
   color: var(--text-muted);

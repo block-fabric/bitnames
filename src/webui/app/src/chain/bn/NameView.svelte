@@ -18,7 +18,7 @@
   import Domain from './Domain.svelte';
   import ProfileForm from './ProfileForm.svelte';
   import RecordEditor from './RecordEditor.svelte';
-  import { handleOf, isLabel, type NameHistory, type NameInfo } from './model';
+  import { handleOf, isLabel, isPunycode, type NameHistory, type NameInfo } from './model';
   import { bn, noteChange, refreshNames } from './store.svelte';
   import { simpleMode } from '../../lib/uimode.svelte';
 
@@ -105,7 +105,13 @@
   let holderValid = $state(false);
   let holderKey = $state(0);
   let busy = $state(false);
-  const labelProblem = $derived(label.trim() && !isLabel(label.trim()) ? t('A label is 1 to 63 lower-case letters, digits and hyphens, not at either end.') : '');
+  const labelProblem = $derived(
+    label.trim() && !isLabel(label.trim())
+      ? t('A label is 1 to 63 lower-case letters, digits and hyphens, not at either end.')
+      : isPunycode(label.trim())
+        ? t('A name starting with xn-- can show in browsers as letters of another script, a look-alike of another name: the wallet does not make it.')
+        : '',
+  );
 
   async function createSubname() {
     const wallet = wallets.current;
