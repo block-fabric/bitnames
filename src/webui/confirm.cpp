@@ -567,8 +567,12 @@ UniValue ConfirmedRpc::Call(const UniValue& params)
         calls.emplace_back(params.find_value("method").get_str(), params.find_value("params").isNull() ? UniValue{UniValue::VARR} : params.find_value("params"));
     }
     const std::string name{calls.front().first};
+    // Reads with the keys of several methods may go together (what a locked wallet holds: its assets and their history).
+    const auto keyed_read{[](const std::string& m) { return !Methods().contains(m) && KeyedWalletRpc(m); }};
+    std::string names{name};
     for (const auto& [m, p] : calls) {
-        if (m != name) throw HostError(BRIDGE_INVALID_REQUEST, "calls: all of one method");
+        if (m != name && !(keyed_read(m) && keyed_read(name))) throw HostError(BRIDGE_INVALID_REQUEST, "calls: all of one method, or reads with the keys");
+        if (names.find(m) == std::string::npos && names.size() < 400) names += ", " + m;
         if (!p.isArray() && !p.isObject()) throw HostError(BRIDGE_INVALID_REQUEST, "params: an array or an object");
     }
     Method method;
@@ -599,7 +603,7 @@ UniValue ConfirmedRpc::Call(const UniValue& params)
     const auto wallet_rows{wallet.empty() ? std::vector<dialog::Row>{} : WalletRows(wallet)};
     // Several reads with the keys: the passphrase of a locked wallet is asked once for the command (it spends nothing).
     if (method.kind == Method::Kind::KEYS && calls.size() > 1) {
-        dialog = Keys(confirm::Call{node, wallet, name, UniValue{UniValue::VARR}});
+        dialog = Keys(confirm::Call{node, wallet, names, UniValue{UniValue::VARR}});
         dialog->rows.push_back(Text("Calls", strprintf("%u", calls.size())));
     }
     const bool keys_batch{dialog.has_value()};
