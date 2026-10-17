@@ -108,11 +108,18 @@ BOOST_AUTO_TEST_CASE(methods_of_the_pages)
 {
     const auto methods{webui::local::RpcMethods()};
     const auto keyed{webui::local::KeyedRpcMethods()};
-    // Every keyed method is one the pages may call, and every method that signs or opens a message needs the keys.
+    const auto confirmed{webui::local::ConfirmedRpcMethods()};
+    // Every keyed method is one the pages may call, and every method that opens a message needs the keys.
     for (const std::string& m : keyed) BOOST_CHECK_MESSAGE(methods.contains(m), m);
-    for (const char* m : {"reservename", "registername", "setnamerecords", "transfername", "releasename", "sendpaymail", "listpaymail", "signasname", "decryptnamemessage"}) {
+    for (const char* m : {"listpaymail", "decryptnamemessage"}) {
         BOOST_CHECK_MESSAGE(keyed.contains(m), m);
         BOOST_CHECK_MESSAGE(webui::KeyedWalletRpc(m), m);
+    }
+    // What pays or signs: never the page's to call, only through the host, which confirms it on the desktop (audit 7 #1).
+    for (const char* m : {"reservename", "registername", "releasereservation", "updatename", "setnamerecords", "createsubname", "transfername", "releasename", "sendpaymail", "signasname"}) {
+        BOOST_CHECK_MESSAGE(confirmed.contains(m) && confirmed.at(m).kind == webui::confirm::Method::Kind::SPEND, m);
+        BOOST_CHECK_MESSAGE(!methods.contains(m) && !keyed.contains(m) && !webui::KeyedWalletRpc(m), m);
+        BOOST_CHECK_MESSAGE(webui::confirm::Methods().contains(m), m);
     }
     // What only reads needs no keys.
     for (const char* m : {"getname", "listnames", "listmynames", "resolvename", "getbitnamesinfo", "gettransaction", "encryptnamemessage"}) {
