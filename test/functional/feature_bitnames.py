@@ -310,6 +310,21 @@ class BitNamesTest(SidechainTest):
         assert_equal(len(side.listnames(1, 0, None, "nakamoto")), 1)
         assert_raises_rpc_error(-8, "A name has no dots", side.reservename, "x.nakamoto")
 
+        self.log.info("No xn-- (punycode) names or subnames from the wallet; record targets are host names")
+        assert_raises_rpc_error(-8, "starts with xn--", side.reservename, "xn--pple-43d")
+        assert_raises_rpc_error(-8, "starts with xn--", side.createsubname, "blog.nakamoto", "xn--pple-43d")
+        for kind in ("CNAME", "NS", "MX", "SRV"):
+            assert_raises_rpc_error(-8, f"{kind}: a host name", side.setnamerecords, "blog.nakamoto", [{"type": kind, "value": "not a host"}])
+        assert_raises_rpc_error(-8, "CNAME: a host name", side.updatename, "blog.nakamoto", {"records": {"alias": "a\u0000b"}})
+        assert_raises_rpc_error(-8, "records: the host a b", side.updatename, "blog.nakamoto", {"records": {"map": {"a b": {"ip": "192.0.2.1"}}}})
+
+        self.log.info("listnames without a filter: any page, the newest ones read from the end, as the whole list has them")
+        every = side.listnames(1000)
+        total = side.getbitnamesinfo()["names"]
+        assert_equal(len(every), total)
+        for count, skip in ((8, max(total - 8, 0)), (3, total - 1), (2, 0), (5, 1), (total, 0), (4, total), (1, total + 5), (0, 0)):
+            assert_equal(side.listnames(count, skip), every[skip:skip + count])
+
         self.log.info("Dotted text is a subname or nothing; names are lower case")
         # The hash of "nope.nakamoto" is not looked up for a subname that does not exist: anyone can
         # register a name by that hash, and payments and messages would go to it.

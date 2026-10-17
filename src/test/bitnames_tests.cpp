@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <bitnames/dns.h>
+#include <common/args.h>
 #include <bitnames/rpcutil.h>
 #include <bitnames/state.h>
 #include <key.h>
@@ -408,9 +409,24 @@ BOOST_AUTO_TEST_CASE(icann_names)
         TState shadowed{state};
         TUndo u;
         const COutPoint com{Registered(shadowed, "com", {}, 40, params)};
-        BOOST_REQUIRE_MESSAGE(shadowed.ApplyTx(CTransaction{Tx({com}, 2, 0, RegisterSubname{"example", {}}, 41)}, 4, params, u, reason), reason);
+        NameData shadow;
+        shadow.ipv4 = SocketV4{{198, 51, 100, 2}, 0};
+        shadow.records = R"({"map": {"www": {"ip": "198.51.100.3"}}})";
+        BOOST_REQUIRE_MESSAGE(shadowed.ApplyTx(CTransaction{Tx({com}, 2, 0, RegisterSubname{"example", shadow}, 41)}, 4, params, u, reason), reason);
+        // The subname alone (before the mark, as DNS read it) would answer 198.51.100.2.
         BOOST_REQUIRE(shadowed.Names().contains(SubnameHash(HashName("com"), "example")));
         BOOST_CHECK(ParseNameArg(UniValue{"example.com"}, shadowed.View()) == name);
+        // DNS reads it as the wallet does: example.com.x is the ICANN name, not the subname of com (audit 7
+        // E-BN3); the subname answers by its hash only.
+        BOOST_CHECK_EQUAL(Resolve(shadowed, "example.com.x", dns::A).rcode, dns::NOERROR);
+        BOOST_CHECK(Resolve(shadowed, "example.com.x", dns::A).records.empty());
+        BOOST_CHECK(state.Names().at(name).icann);
+        // Under it: subnames of the ICANN name, never of the subname of com.
+        BOOST_CHECK_EQUAL(Resolve(shadowed, "www.example.com.x", dns::A).rcode, dns::NXDOMAIN);
+        std::string error;
+        const auto lookup{[&](const NameHash& h) { return shadowed.View().GetName(h); }};
+        BOOST_CHECK(!ResolveNameText("www.example.com", lookup, {}, error));
+        BOOST_CHECK(error.starts_with("No such subname"));
         // The subname, by its hash.
         BOOST_CHECK(ParseNameArg(UniValue{"0x" + SubnameHash(HashName("com"), "example").GetHex()}, shadowed.View()) == SubnameHash(HashName("com"), "example"));
     }
@@ -1756,6 +1772,106 @@ BOOST_AUTO_TEST_CASE(record_rows)
     BOOST_CHECK_EQUAL(shown["ipv4"].get_str(), "192.0.2.1");
     BOOST_CHECK_EQUAL(shown["ipv6"].get_str(), "2001:db8::1");
     BOOST_CHECK(shown["records"].isObject());
+}
+
+BOOST_AUTO_TEST_CASE(dns_bind_setting)
+{
+    // -nodnsbind and dnsbind=0 turn the server off: "0" given to the system as an address is 0.0.0.0, every
+    // interface (audit 7 E-BN1).
+    const auto setting{[](std::vector<const char*> argv) {
+        ArgsManager args;
+        args.AddArg("-dnsbind", "", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+        argv.insert(argv.begin(), "ignored");
+        std::string error;
+        BOOST_REQUIRE_MESSAGE(args.ParseParameters(argv.size(), argv.data(), error), error);
+        return DnsBindSetting(args);
+    }};
+    BOOST_CHECK(!setting({}));
+    BOOST_CHECK(!setting({"-nodnsbind"}));
+    BOOST_CHECK(!setting({"-nodnsbind=1"}));
+    BOOST_CHECK(!setting({"-dnsbind=0"}));
+    BOOST_CHECK(!setting({"-dnsbind=127.0.0.1:5335", "-nodnsbind"}));
+    BOOST_CHECK_EQUAL(setting({"-dnsbind"}).value_or("off"), "127.0.0.1");
+    BOOST_CHECK_EQUAL(setting({"-dnsbind=1"}).value_or("off"), "127.0.0.1");
+    BOOST_CHECK_EQUAL(setting({"-dnsbind=127.0.0.1:5335"}).value_or("off"), "127.0.0.1:5335");
+    BOOST_CHECK_EQUAL(setting({"-dnsbind=0.0.0.0"}).value_or("off"), "0.0.0.0");
+}
+
+BOOST_AUTO_TEST_CASE(record_host_names)
+{
+    // The targets of records and the labels of the map are host names, in the wallet (audit 7 E-BN4).
+    BOOST_CHECK(IsHostName("mail"));
+    BOOST_CHECK(IsHostName("mail.example.com."));
+    BOOST_CHECK(IsHostName("_sip._tcp.Example.com"));
+    BOOST_CHECK(!IsHostName(""));
+    BOOST_CHECK(!IsHostName("."));
+    BOOST_CHECK(!IsHostName("a..b"));
+    BOOST_CHECK(!IsHostName("bad host"));
+    BOOST_CHECK(!IsHostName(std::string{"nul\0x", 5}));
+    BOOST_CHECK(!IsHostName(std::string(64, 'a')));
+    BOOST_CHECK(IsHostName(std::string(63, 'a')));
+    std::string long_name;
+    for (int i{0}; i < 64; ++i) long_name += "abc.";
+    BOOST_CHECK(!IsHostName(long_name));
+
+    const auto message{[](const auto& f) {
+        try {
+            f();
+        } catch (const UniValue& e) {
+            return e.find_value("message").get_str();
+        }
+        return std::string{};
+    }};
+    const auto row{[](const std::string& type, const std::string& value) {
+        UniValue rows(UniValue::VARR);
+        UniValue r(UniValue::VOBJ);
+        r.pushKV("type", type);
+        r.pushKV("value", value);
+        rows.push_back(std::move(r));
+        return rows;
+    }};
+    for (const char* type : {"CNAME", "NS", "MX", "SRV"}) {
+        BOOST_CHECK_MESSAGE(message([&] { RecordsFromRows(row(type, "bad host")); }).starts_with(std::string{type} + ": a host name"), type);
+        BOOST_CHECK_MESSAGE(message([&] { RecordsFromRows(row(type, "host.example.com.")); }).empty(), type);
+        BOOST_CHECK_MESSAGE(message([&] { RecordsFromRows(row(type, "@")); }).empty(), type);
+    }
+    // The same in records given as JSON.
+    UniValue data(UniValue::VOBJ);
+    data.pushKV("records", R"({"alias": "a b"})");
+    BOOST_CHECK(message([&] { ParseData(data); }).starts_with("CNAME: a host name"));
+    data.setObject();
+    data.pushKV("records", R"({"mx": [[10, "x\ty"]]})");
+    BOOST_CHECK(message([&] { ParseData(data); }).starts_with("MX: a host name"));
+    data.setObject();
+    data.pushKV("records", R"({"map": {"a b": {"ip": "192.0.2.1"}}})");
+    BOOST_CHECK(message([&] { ParseData(data); }).starts_with("records: the host a b"));
+    data.setObject();
+    data.pushKV("records", R"({"map": {"_443": {"map": {"*": {"srv": [[1, 2, 3, "ok.example."]]}}}, "": {"ns": ["ns1"]}}})");
+    BOOST_CHECK(message([&] { ParseData(data); }).empty());
+
+    // Punycode labels.
+    BOOST_CHECK(IsPunycodeName("xn--pple-43d"));
+    BOOST_CHECK(IsPunycodeName("blog.XN--pple-43d"));
+    BOOST_CHECK(!IsPunycodeName("xnapple"));
+    BOOST_CHECK(!IsPunycodeName("a-xn--b"));
+}
+
+BOOST_AUTO_TEST_CASE(dns_targets_that_are_not_host_names)
+{
+    // Records written before the wallet checked them, or by another program: a target that is not a host
+    // name is left out of the answer (audit 7 E-BN4).
+    Consensus::BitNamesParams params;
+    TState state;
+    NameData odd;
+    odd.records = R"({"ns": ["good", "has space", "nul\u0000x", "\u0430pple"], "mx": [[10, "ok"], [20, "a..b"]], "srv": [[1, 2, 3, "tab\there"]]})";
+    Registered(state, "odd", odd, 10, params);
+    BOOST_CHECK((Texts(Resolve(state, "odd.x", dns::NS)) == std::vector<std::string>{"NS good.odd.x."}));
+    BOOST_CHECK((Texts(Resolve(state, "odd.x", dns::MX)) == std::vector<std::string>{"MX 10 ok.odd.x."}));
+    BOOST_CHECK(Resolve(state, "odd.x", dns::SRV).records.empty());
+    NameData alias;
+    alias.records = R"({"alias": "not a host."})";
+    Registered(state, "alias", alias, 20, params);
+    BOOST_CHECK(Resolve(state, "alias.x", dns::A).records.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

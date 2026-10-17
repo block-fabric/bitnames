@@ -112,7 +112,8 @@ RPCMethod listnames()
 {
     return RPCMethod{
         "listnames",
-        "The registered names, in the order of registration.",
+        "The registered names, in the order of registration. Without a filter, a page is read from the numbers alone (the newest\n"
+        "from the end); with a parent, from its index of subnames; a match reads every name.",
         {
             {"count", RPCArg::Type::NUM, RPCArg::Default{100}, "How many"},
             {"skip", RPCArg::Type::NUM, RPCArg::Default{0}, "How many to skip"},
@@ -132,21 +133,72 @@ RPCMethod listnames()
     const bitnames::State state{chainstate.SideState().BitNames()};
     UniValue result(UniValue::VARR);
     const std::optional<std::string> match{request.params[2].isNull() ? std::nullopt : std::optional{ToLower(request.params[2].get_str())}};
-    // The subnames of a name: the registry has no index by parent, so this walks it here, in the node, in one call
-    // (the GUI read it 1000 names a call, and stopped at 10000).
     const std::optional<bitnames::NameHash> parent{request.params[3].isNull() ? std::nullopt : std::optional{bitnames::ParseNameArg(request.params[3], state)}};
-    int skipped{0};
-    // Through the numbers names have: those of released names are not there to step over.
-    state.ForEachSeq(0, [&](uint32_t, const bitnames::NameHash& name) {
-        if (result.size() >= static_cast<size_t>(count)) return false;
-        const auto record{state.GetName(name)};
-        if (!record) return true;
-        if (parent && record->parent != parent) return true;
-        if (match && ToLower(bitnames::FullText(state, *record)).find(*match) == std::string::npos) return true;
-        if (skipped++ < skip) return true;
-        result.push_back(NameToJSON(chainstate, state, name, *record, std::nullopt));
-        return true;
-    });
+    const auto wanted{[&](const bitnames::NameRecord& record) {
+        if (parent && record.parent != parent) return false;
+        return !match || ToLower(bitnames::FullText(state, record)).find(*match) != std::string::npos;
+    }};
+    if (parent) {
+        // The subnames of a name, from its index of children (at most MAX_SUBNAMES), in the order of registration.
+        std::vector<std::pair<uint32_t, std::pair<bitnames::NameHash, bitnames::NameRecord>>> children;
+        for (const bitnames::NameHash& child : state.ChildrenOf(*parent)) {
+            auto record{state.GetName(child)};
+            if (record && wanted(*record)) children.push_back({record->seq, {child, std::move(*record)}});
+        }
+        std::sort(children.begin(), children.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (size_t i{static_cast<size_t>(skip)}; i < children.size() && result.size() < static_cast<size_t>(count); ++i) {
+            result.push_back(NameToJSON(chainstate, state, children[i].second.first, children[i].second.second, std::nullopt));
+        }
+        return result;
+    }
+    if (match) {
+        // A search reads every name (and the names above it, for its text): that is what was asked.
+        int skipped{0};
+        state.ForEachSeq(0, [&](uint32_t, const bitnames::NameHash& name) {
+            if (result.size() >= static_cast<size_t>(count)) return false;
+            const auto record{state.GetName(name)};
+            if (!record || !wanted(*record)) return true;
+            if (skipped++ < skip) return true;
+            result.push_back(NameToJSON(chainstate, state, name, *record, std::nullopt));
+            return true;
+        });
+        return result;
+    }
+    // No filter: the names are those of the numbers (released names leave theirs empty), so the ones
+    // skipped are stepped over without reading them. Toward the end of the list (the newest names, as the
+    // app shows them) the numbers are walked from the end: in windows back from NextSeq, each twice as
+    // large, so that only the newest are read.
+    const uint64_t total{state.NameCount()};
+    if (static_cast<uint64_t>(skip) >= total || count == 0) return result;
+    const uint64_t tail{total - skip};
+    std::vector<bitnames::NameHash> page;
+    if (tail <= static_cast<uint64_t>(skip)) {
+        const uint32_t next{state.NextSeq()};
+        std::vector<bitnames::NameHash> last;
+        for (uint64_t window{std::max<uint64_t>(tail, 16)};; window *= 2) {
+            const uint32_t from{window >= next ? 0 : static_cast<uint32_t>(next - window)};
+            last.clear();
+            state.ForEachSeq(from, [&](uint32_t, const bitnames::NameHash& name) {
+                last.push_back(name);
+                return true;
+            });
+            if (last.size() >= tail || from == 0) break;
+        }
+        // The names from position `skip` on are the last `tail` of them.
+        const size_t first{last.size() > tail ? last.size() - static_cast<size_t>(tail) : 0};
+        for (size_t i{first}; i < last.size() && page.size() < static_cast<size_t>(count); ++i) page.push_back(last[i]);
+    } else {
+        int skipped{0};
+        state.ForEachSeq(0, [&](uint32_t, const bitnames::NameHash& name) {
+            if (page.size() >= static_cast<size_t>(count)) return false;
+            if (skipped++ < skip) return true;
+            page.push_back(name);
+            return true;
+        });
+    }
+    for (const bitnames::NameHash& name : page) {
+        if (const auto record{state.GetName(name)}) result.push_back(NameToJSON(chainstate, state, name, *record, std::nullopt));
+    }
     return result;
 },
     };

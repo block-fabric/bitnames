@@ -458,6 +458,18 @@ class BitNamesRejectsTest(BitNamesTest):
         self.nodes[1].assert_start_raises_init_error(self.extra_args[1] + [f"-dnsbind={in_use}"],
                                                      re.escape(f"Error: The BitNames DNS server (-dnsbind={in_use}) did not start: cannot listen on {in_use} (is it in use?)"),
                                                      match=ErrorMatch.PARTIAL_REGEX)
+        self.log.info("-dnsbind on every interface (0.0.0.0, ::) only with -dnsbindany; -nodnsbind and dnsbind=0 turn it off")
+        self.nodes[1].assert_start_raises_init_error(self.extra_args[1] + ["-dnsbind=0.0.0.0:0"], "answers DNS on every interface",
+                                                     match=ErrorMatch.PARTIAL_REGEX)
+        self.nodes[1].assert_start_raises_init_error(self.extra_args[1] + ["-dnsbind=[::]:0"], "answers DNS on every interface",
+                                                     match=ErrorMatch.PARTIAL_REGEX)
+        for off in (["-nodnsbind"], ["-dnsbind=0"], ["-dnsbind=127.0.0.1:0", "-nodnsbind"]):
+            self.start_node(1, extra_args=self.extra_args[1] + off)
+            assert "dns" not in other.getbitnamesinfo()
+            self.stop_node(1)
+        self.start_node(1, extra_args=self.extra_args[1] + ["-dnsbind=0.0.0.0:0", "-dnsbindany"])
+        assert other.getbitnamesinfo()["dns"].startswith("0.0.0.0:")
+        self.stop_node(1)
         self.start_node(1)
         assert "dns" not in other.getbitnamesinfo()
         self.connect_nodes(0, 1)

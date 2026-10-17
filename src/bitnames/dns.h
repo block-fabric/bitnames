@@ -39,7 +39,8 @@ inline constexpr uint32_t DNS_TTL{60};
 inline constexpr size_t MAX_DNS_LABELS{16};
 /**
  * Most names read from the state for one answer (each label, each delegation, each step down the
- * subnames a delegation names): the chain's lock is held while they are read. Beyond it, SERVFAIL.
+ * subnames a delegation names): the chain's lock is held while they are read. Beyond it, SERVFAIL. One more
+ * read per question looks for an ICANN name of its last two labels (IcannStart).
  */
 inline constexpr int MAX_DNS_READS{48};
 
@@ -124,7 +125,14 @@ private:
 /** A DNS response to the query `query` (a UDP datagram); empty if it is not worth answering. */
 std::vector<unsigned char> DnsRespond(const std::vector<unsigned char>& query, const std::function<dns::Answer(const std::string&, uint16_t)>& resolve);
 
-/** Start the DNS server if -dnsbind is set. @return false if it was asked for and could not start. */
+/**
+ * Where -dnsbind asks the DNS server to listen: nullopt if it is off (not set, -nodnsbind, dnsbind=0), the
+ * loopback address for -dnsbind alone (or =1), else the address given.
+ */
+std::optional<std::string> DnsBindSetting(const ArgsManager& args);
+/**
+ * Start the DNS server if -dnsbind is set. A wildcard address (0.0.0.0, ::) is refused unless -dnsbindany is
+ * set; any address that is not loopback is warned about. @return false if it was asked for and could not start. */
 bool StartDnsServer(const ArgsManager& args, ChainstateManager& chainman, std::string& error);
 void StopDnsServer();
 /** Where the DNS server listens, if it runs. */
