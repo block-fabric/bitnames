@@ -57,6 +57,8 @@
   const getname = (n) => rpc('getname', [n]).catch(() => null);
 
   try {
+    // What pays or signs is confirmed in the dialog of the host (audit 7 #1): every question accepted here, checked at the end.
+    await host('test.confirmAnswer', { always: true });
     await waitFor('the node to run', () => T() && T().app.phase === 'ready' && T().node.tip, 120000);
     await waitFor('the node to reach the mainchain', async () => (await rpc('getmainchaininfo')).connected, 60000);
     await check('BitNames, the dashboard and Midnight by default', T().app.info.name === 'BitNames' && T().prefs.layout === 'dashboard' && (T().prefs.theme ?? 'midnight') === 'midnight', `${T().app.info.name} ${T().prefs.layout}`);
@@ -238,6 +240,12 @@
 
     await rpc('setbmm', [false]);
     await log(`NAME ${registered.namehash}`);
+    {
+      // The confirmations of the desktop: what the chain's pages paid or signed, each with its facts.
+      const titles = ["Change the records of a name", "Create a subname", "Register a name", "Release a name", "Release a reservation", "Reserve a name", "Send paymail", "Sign as a name", "Transfer a name", "Update a name"];
+      const asked = (await host('test.confirmed', {})).filter((q) => titles.includes(q.title));
+      await check(`the desktop confirmed what the pages paid or signed (${asked.length})`, asked.length > 0 && asked.every((q) => q.rows.length > 1), JSON.stringify(asked.map((q) => q.title)));
+    }
     await finish();
   } catch (e) {
     await finish(e);

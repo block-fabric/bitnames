@@ -127,31 +127,42 @@ std::map<std::string, Bridge::Thread> RpcMethods()
         {"listmynames", Bridge::Thread::WORKER},
         {"gettransaction", Bridge::Thread::WORKER},
         {"encryptnamemessage", Bridge::Thread::WORKER},
-        // What the wallet does: transactions it signs, keys it makes, messages it opens (the keys, below).
-        {"reservename", Bridge::Thread::WORKER},
-        {"registername", Bridge::Thread::WORKER},
-        {"releasereservation", Bridge::Thread::WORKER},
-        {"updatename", Bridge::Thread::WORKER},
-        {"setnamerecords", Bridge::Thread::WORKER},
-        {"createsubname", Bridge::Thread::WORKER},
-        {"transfername", Bridge::Thread::WORKER},
-        {"releasename", Bridge::Thread::WORKER},
+        // What the wallet does with its keys: keys it makes, messages it opens (the keys, below); what it signs is confirmed on
+        // the desktop (ConfirmedRpcMethods).
         {"getnewnamekeys", Bridge::Thread::WORKER},
-        {"signasname", Bridge::Thread::WORKER},
         {"decryptnamemessage", Bridge::Thread::WORKER},
-        {"sendpaymail", Bridge::Thread::WORKER},
         {"listpaymail", Bridge::Thread::WORKER},
     };
 }
 
 std::set<std::string> KeyedRpcMethods()
 {
-    // Each needs the wallet unlocked: it signs a transaction, makes keys, signs as a name or opens a message.
-    return {"reservename", "registername", "releasereservation", "updatename", "setnamerecords", "createsubname", "transfername", "releasename", "getnewnamekeys", "signasname", "decryptnamemessage", "sendpaymail", "listpaymail"};
+    // Each needs the wallet unlocked: it makes keys or opens a message (the passphrase asked by the host).
+    return {"getnewnamekeys", "decryptnamemessage", "listpaymail"};
 }
 
-void RegisterHost(Bridge& bridge, NodeFn node, guard::ConfirmFn confirm)
+std::map<std::string, confirm::Method> ConfirmedRpcMethods()
 {
+    // What the pages do that pays or signs: never the page's to call by itself. The host shows each call on the desktop, its
+    // destinations whole first, then its amounts, then the rest of its parameters, with the passphrase of a locked wallet
+    // typed there, and runs it with the keys unlocked for it alone (confirm.h, audit 7 #1).
+    return {
+        {"reservename", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Reserve a name", "Reserve", "The wallet pays for a reservation of a name, which hides it until it is registered."), /*fee_unknown=*/true}},
+        {"registername", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Register a name", "Register", "The wallet registers a name it reserved, to the owner shown."), /*fee_unknown=*/true}},
+        {"releasereservation", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Release a reservation", "Release", "The wallet gives up a reservation of a name."), /*fee_unknown=*/true}},
+        {"updatename", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Update a name", "Update", "The wallet signs a change of a name it owns."), /*fee_unknown=*/true}},
+        {"setnamerecords", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Change the records of a name", "Change", "The wallet signs new records for a name it owns."), /*fee_unknown=*/true}},
+        {"createsubname", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Create a subname", "Create", "The wallet creates a subname of a name it owns, owned by the address shown.", {"address"}, {}), /*fee_unknown=*/true}},
+        {"transfername", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Transfer a name", "Transfer", "The wallet gives a name it owns to the address shown: it cannot be taken back.", {"address"}, {}), /*fee_unknown=*/true}},
+        {"releasename", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Release a name", "Release", "The wallet gives up a name it owns, and its subnames: anyone may register it then."), /*fee_unknown=*/true}},
+        {"sendpaymail", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Send paymail", "Send", "The wallet pays and sends a message to a name.", {"name"}, {"amount"}), /*fee_unknown=*/true}},
+        {"signasname", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Sign as a name", "Sign", "The wallet signs this message with the key of a name it owns."), /*fee_unknown=*/true}},
+    };
+}
+
+void RegisterHost(Bridge& bridge, NodeFn node, guard::ConfirmFn confirm, confirm::KeysFn keys)
+{
+    (void)keys;
     // The names this app is registering, by wallet: the text a reservation hides and the step it is at, so that
     // the registration goes on after a restart (chains-qt kept them in its settings).
     bridge.RegisterHost("bitnames.store.load", [node](const UniValue&) {
