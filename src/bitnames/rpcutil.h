@@ -54,6 +54,22 @@ NameHash ParseNameArg(const UniValue& value, const State& state);
 std::string FullText(const State& state, const NameRecord& record);
 /** Whether text is what the wallet makes names of, and shows: 1 to 255 lower-case letters, digits, '-' and '_'. */
 bool IsGoodNameText(const std::string& text);
+/**
+ * Whether text is a host name as DNS has them (a target of CNAME, NS, MX or SRV): labels of 1 to 63 letters,
+ * digits, hyphens and underscores, separated by dots, at most 253 characters, a final dot or not.
+ */
+bool IsHostName(const std::string& text);
+/**
+ * Whether a label of the text starts with "xn--": IDNA punycode, which browsers may show as letters of another
+ * script that look like those of another name. The wallet registers no such names (see doc/bitnames.md).
+ */
+bool IsPunycodeName(const std::string& text);
+/**
+ * Where the labels of a name (without the top-level domain) start from: the ICANN name of their last two labels
+ * if there is one (an ICANN name has one dot at most), or else the last label. One read at most. @return the index of its first label, and its hash. The wallet's commands and the
+ * DNS server read names alike with it.
+ */
+std::pair<size_t, NameHash> IcannStart(const std::vector<std::string>& labels, const NameLookup& lookup);
 /** Whether text has the form of a name ResolveNameText may find: labels of IsGoodNameText, or a hash. */
 bool IsNameTextForm(const std::string& text);
 

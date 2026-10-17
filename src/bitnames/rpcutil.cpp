@@ -131,11 +131,52 @@ CAmount ParseFee(const UniValue& value)
     return fee;
 }
 
+/** A target of a record as written: "@" (the name), or a host name. */
+void CheckTarget(const std::string& type, const UniValue& value)
+{
+    if (!value.isStr()) return;
+    const std::string& text{value.get_str()};
+    if (text.empty() || text == "@" || IsHostName(text)) return;
+    throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("%s: a host name (labels of letters, digits, - and _, separated by dots, absolute if it ends with a dot) or @, not %s", type, text));
+}
+
+/**
+ * The host names records point to and the labels of their map, as DNS has them (the chain takes any JSON
+ * object; the DNS server leaves out what is not a host name).
+ */
+void CheckRecordNames(const UniValue& node, int depth = 0)
+{
+    if (!node.isObject() || depth > 16) return;
+    const auto many{[&](const char* key) {
+        if (!node.exists(key)) return std::vector<UniValue>{};
+        return node[key].isArray() ? node[key].getValues() : std::vector<UniValue>{node[key]};
+    }};
+    if (node.exists("alias")) CheckTarget("CNAME", node["alias"]);
+    for (const UniValue& v : many("ns")) CheckTarget("NS", v);
+    for (const UniValue& v : many("mx")) {
+        for (const UniValue& part : v.isArray() ? v.getValues() : std::vector<UniValue>{v}) CheckTarget("MX", part);
+    }
+    for (const UniValue& v : many("srv")) {
+        if (v.isArray() && v.size() == 4) CheckTarget("SRV", v[3]);
+    }
+    if (node.exists("map") && node["map"].isObject()) {
+        const UniValue& map{node["map"]};
+        for (const std::string& label : map.getKeys()) {
+            const bool service{label.size() > 1 && label[0] == '_' && IsDnsLabel(ToLower(label.substr(1)))};
+            if (!label.empty() && label != "*" && !service && !IsDnsLabel(ToLower(label))) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("records: the host %s is not a label of letters, digits and hyphens (_ in front for services), or *", label));
+            }
+            CheckRecordNames(map[label], depth + 1);
+        }
+    }
+}
+
 std::string ParseRecords(const UniValue& value)
 {
     std::string text{value.isStr() ? value.get_str() : value.write()};
     UniValue parsed;
     if (!parsed.read(text) || !parsed.isObject()) throw JSONRPCError(RPC_INVALID_PARAMETER, "records: a JSON object");
+    CheckRecordNames(parsed);
     text = parsed.write();
     if (text.size() > MAX_RECORDS_SIZE) throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("records: at most %u bytes of JSON", MAX_RECORDS_SIZE));
     return text;
@@ -299,6 +340,7 @@ std::string RecordsFromRows(const UniValue& rows)
             if (!addr || !addr->IsIPv6()) throw JSONRPCError(RPC_INVALID_PARAMETER, "AAAA: an IPv6 address, such as 2001:db8::7");
             node.values["ip6"].push_back(UniValue{value});
         } else if (type == "CNAME") {
+            CheckTarget(type, UniValue{value});
             if (node.values.contains("alias")) throw JSONRPCError(RPC_INVALID_PARAMETER, "One CNAME per host");
             node.values["alias"].push_back(UniValue{value});
         } else if (type == "DELEGATE") {
@@ -308,13 +350,16 @@ std::string RecordsFromRows(const UniValue& rows)
         } else if (type == "TXT") {
             node.values["txt"].push_back(UniValue{value});
         } else if (type == "NS") {
+            CheckTarget(type, UniValue{value});
             node.values["ns"].push_back(UniValue{value});
         } else if (type == "MX") {
+            CheckTarget(type, UniValue{value});
             UniValue mx(UniValue::VARR);
             mx.push_back(Number(row, "priority", 10));
             mx.push_back(value);
             node.values["mx"].push_back(std::move(mx));
         } else if (type == "SRV") {
+            CheckTarget(type, UniValue{value});
             UniValue srv(UniValue::VARR);
             srv.push_back(Number(row, "priority", 10));
             srv.push_back(Number(row, "weight", 0));
@@ -504,6 +549,19 @@ NameHash ParseNameArg(const UniValue& value, const State& state)
     return ParseNameArg(value, [&](const NameHash& h) { return state.GetName(h); }, [&](uint32_t seq) { return state.NameOfSeq(seq); });
 }
 
+std::pair<size_t, NameHash> IcannStart(const std::vector<std::string>& labels, const NameLookup& lookup)
+{
+    // An ICANN name has one dot at most (IsIcannName): with one, it is the last two labels.
+    if (labels.size() >= 2) {
+        const std::string suffix{labels[labels.size() - 2] + "." + labels.back()};
+        if (IsIcannName(suffix)) {
+            const NameHash hash{HashName(suffix)};
+            if (const auto record{lookup(hash)}; record && record->icann && record->icann_name == suffix) return {labels.size() - 2, hash};
+        }
+    }
+    return {labels.size() - 1, HashName(labels.back())};
+}
+
 std::optional<NameHash> ResolveNameText(const std::string& text, const NameLookup& lookup, const SeqLookup& by_seq, std::string& error)
 {
     const auto fail{[&](std::string why) -> std::optional<NameHash> {
@@ -536,13 +594,15 @@ std::optional<NameHash> ResolveNameText(const std::string& text, const NameLooku
     if (labels.size() == 1) return HashName(text);
     // An ICANN name has dots: the authority vouches for its text. It goes before a subname of the same
     // text, which the holder of the name of its last label ("com") could make to stand for any ICANN
-    // name under it.
-    if (const auto record{lookup(HashName(text))}; record && record->icann && record->icann_name == text) return HashName(text);
-    // A subname: down from the last label, each step a subname of the one above (not a top-level
-    // name registered by its hash).
-    NameHash at{HashName(labels.back())};
+    // name under it. The longest one the text ends with is where it starts (pay.example.com: the
+    // subname pay of the ICANN name example.com), as the DNS server reads it (IcannStart).
+    const auto [top, start]{IcannStart(labels, lookup)};
+    if (top == 0) return start;
+    // A subname: down from that name, or else from the last label, each step a subname of the one above
+    // (not a top-level name registered by its hash).
+    NameHash at{start};
     bool found{lookup(at).has_value()};
-    for (size_t i{labels.size() - 1}; found && i-- > 0;) {
+    for (size_t i{top}; found && i-- > 0;) {
         const NameHash parent{at};
         at = SubnameHash(at, labels[i]);
         const auto record{lookup(at)};
@@ -560,6 +620,28 @@ NameHash ParseNameArg(const UniValue& value, const NameLookup& lookup, const Seq
     const auto name{ResolveNameText(value.get_str(), lookup, by_seq, error)};
     if (!name) throw JSONRPCError(RPC_INVALID_PARAMETER, error);
     return *name;
+}
+
+bool IsHostName(const std::string& text)
+{
+    std::string_view name{text};
+    if (!name.empty() && name.back() == '.') name.remove_suffix(1);
+    if (name.empty() || name.size() > 253) return false;
+    for (const std::string& label : util::SplitString(name, '.')) {
+        if (label.empty() || label.size() > 63) return false;
+        if (!std::all_of(label.begin(), label.end(), [](char c) {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+            })) return false;
+    }
+    return true;
+}
+
+bool IsPunycodeName(const std::string& text)
+{
+    for (const std::string& label : util::SplitString(text, '.')) {
+        if (ToLower(label).starts_with("xn--")) return true;
+    }
+    return false;
 }
 
 bool IsNameTextForm(const std::string& text)

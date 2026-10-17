@@ -119,6 +119,9 @@ public:
     void AddName(uint16_t type, const std::string& host, std::vector<unsigned char> prefix = {}, std::string text_prefix = {})
     {
         const std::string absolute{Host(host)};
+        // Only a host name, as DNS has them: records are anyone's JSON, and a target of spaces, control
+        // characters or other bytes is left out rather than answered.
+        if (!IsHostName(absolute)) return;
         const auto encoded{EncodeName(absolute)};
         if (!encoded) return;
         prefix.insert(prefix.end(), encoded->begin(), encoded->end());
@@ -326,7 +329,14 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
         return seen.back().get();
     }};
     const auto over{[&] { return reads > MAX_DNS_READS; }};
-    NameHash current{HashName(labels[labels.size() - 2])};
+    // The name the question starts from, as the wallet's commands read it: the longest ICANN name it ends
+    // with (www.example.com.x: the ICANN name example.com, not the subname example of com), or else the
+    // label before .x.
+    const std::vector<std::string> name_labels{labels.begin(), labels.end() - 1};
+    // That one read is not counted against MAX_DNS_READS: it is one per question, before the walk the bound is
+    // for.
+    const auto [top, start]{IcannStart(name_labels, [&](const NameHash& hash) { return state.GetName(hash); })};
+    NameHash current{start};
     const NameRecord* record{lookup(current)};
     if (!record) {
         answer.rcode = NXDOMAIN;
@@ -334,7 +344,8 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
     }
     UniValue node{RootNode(*record)};
     // The domain relative host names are under: that of the name whose records are read.
-    std::string base{labels[labels.size() - 2] + "." + DNS_TLD};
+    std::string base{DNS_TLD};
+    for (size_t i{name_labels.size()}; i-- > top;) base = name_labels[i] + "." + base;
     int delegations{0};
     // A node that delegates to another name stands for the records of that name.
     const auto follow{[&]() -> bool {
@@ -355,7 +366,7 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
 
     // Down from the name to the subdomain asked for: a subname on the chain first, then the map of
     // the records, where "*" matches any label.
-    for (size_t i{labels.size() - 2}; i-- > 0;) {
+    for (size_t i{top}; i-- > 0;) {
         const std::string& label{labels[i]};
         const NameHash sub{SubnameHash(current, label)};
         const NameRecord* subname{lookup(sub)};
@@ -610,36 +621,74 @@ private:
     std::thread m_thread;
 };
 
-std::unique_ptr<DnsServer> g_dns_server;
-std::string g_dns_address;
+// The server and its address: set at startup and reset at shutdown, while RPC threads may ask where it
+// listens (getbitnamesinfo); under the lock, as the RPC threads read them.
+Mutex g_dns_mutex;
+std::unique_ptr<DnsServer> g_dns_server GUARDED_BY(g_dns_mutex);
+std::string g_dns_address GUARDED_BY(g_dns_mutex);
 } // namespace
 
 std::optional<std::string> DnsServerAddress()
 {
+    LOCK(g_dns_mutex);
     if (!g_dns_server) return std::nullopt;
     return g_dns_address;
 }
 
+std::optional<std::string> DnsBindSetting(const ArgsManager& args)
+{
+    // -nodnsbind, dnsbind=0 (or any false form): off, as it is when not set. Never an address: "0" is
+    // read as 0.0.0.0 by the system, which would answer on every interface.
+    if (!args.IsArgSet("-dnsbind") || args.IsArgNegated("-dnsbind")) return std::nullopt;
+    const std::string where{args.GetArg("-dnsbind", "")};
+    if (where == "0" || ToLower(where) == "false" || ToLower(where) == "no") return std::nullopt;
+    // -dnsbind alone, or dnsbind=1: on, on the loopback address.
+    if (where.empty() || where == "1" || ToLower(where) == "true" || ToLower(where) == "yes") return std::string{"127.0.0.1"};
+    return where;
+}
+
 bool StartDnsServer(const ArgsManager& args, ChainstateManager& chainman, std::string& error)
 {
-    if (!args.IsArgSet("-dnsbind")) return true;
-    const std::string where{args.GetArg("-dnsbind", "")};
-    const auto bind{Lookup(where.empty() ? "127.0.0.1" : where, DEFAULT_DNS_PORT, /*fAllowLookup=*/false)};
+    const auto setting{DnsBindSetting(args)};
+    if (!setting) return true;
+    const std::string& where{*setting};
+    const auto bind{Lookup(where, DEFAULT_DNS_PORT, /*fAllowLookup=*/false)};
     if (!bind) {
         error = strprintf("Invalid -dnsbind address: %s", where);
         return false;
     }
-    g_dns_server = std::make_unique<DnsServer>();
+    // A wildcard address answers on every interface: a reflector for anyone who can reach the computer.
+    if (bind->IsBindAny() && !args.GetBoolArg("-dnsbindany", false)) {
+        error = strprintf("-dnsbind=%s answers DNS on every interface of the computer, to anyone who can reach it: give the address of one "
+                          "interface (127.0.0.1 for this computer only), or set -dnsbindany=1 if that is what you mean", where);
+        return false;
+    }
+    if (!bind->IsLocal()) {
+        LogWarning("The BitNames DNS server listens on %s, not on a loopback address: whoever can reach that address may ask it, within its rate limit",
+                   bind->ToStringAddrPort());
+    }
+    auto server{std::make_unique<DnsServer>()};
     std::string why;
-    if (!g_dns_server->Start(*bind, chainman, why)) {
-        g_dns_server.reset();
+    if (!server->Start(*bind, chainman, why)) {
         error = strprintf("The BitNames DNS server (-dnsbind=%s) did not start: %s", where, why);
         return false;
     }
+    LOCK(g_dns_mutex);
+    g_dns_server = std::move(server);
     g_dns_address = bind->ToStringAddrPort();
     return true;
 }
 
-void StopDnsServer() { g_dns_server.reset(); }
+void StopDnsServer()
+{
+    std::unique_ptr<DnsServer> server;
+    {
+        LOCK(g_dns_mutex);
+        server = std::move(g_dns_server);
+        g_dns_address.clear();
+    }
+    // Stopped (its thread joined) outside the lock: getbitnamesinfo does not wait for it.
+    server.reset();
+}
 
 } // namespace bitnames

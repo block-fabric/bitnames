@@ -275,6 +275,18 @@ NameHash ParseName(CWallet& wallet, const UniValue& value)
     return bitnames::ParseNameArg(value, [&](const NameHash& h) { return wallet.chain().getBitName(h); }, [&](uint32_t seq) { return wallet.chain().getBitNameOfSeq(seq); });
 }
 
+/**
+ * No "xn--" label (IDNA punycode): a browser may show it as letters of another script, a look-alike of another
+ * name (xn--pple-43d.x shows as an "apple" with a Cyrillic a). The chain takes such names; this wallet does not
+ * make them.
+ */
+void CheckNotPunycode(const std::string& text)
+{
+    if (bitnames::IsPunycodeName(text)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("%s starts with xn--: browsers may show such a name as letters of another script that look like another name, so this wallet does not make names or subnames of that form", text));
+    }
+}
+
 /** The text of a name this wallet reserves or registers: what DNS can look up, and what is shown as it is. */
 void CheckNewName(const std::string& name)
 {
@@ -287,6 +299,7 @@ void CheckNewName(const std::string& name)
     if (!bitnames::IsGoodNameText(name)) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A name is 1 to %u lower-case letters, digits, - and _", bitnames::MAX_NAME_TEXT_SIZE));
     }
+    CheckNotPunycode(name);
 }
 
 } // namespace
@@ -812,6 +825,7 @@ RPCMethod createsubname()
     const NameHash parent{ParseName(*pwallet, request.params[0])};
     const std::string label{request.params[1].get_str()};
     if (!bitnames::IsDnsLabel(label)) throw JSONRPCError(RPC_INVALID_PARAMETER, "A label is 1 to 63 lower-case letters, digits and hyphens, not at either end");
+    CheckNotPunycode(label);
     const NameHash child{bitnames::SubnameHash(parent, label)};
     if (const auto taken{pwallet->chain().getBitName(child)}) {
         // A top-level name with the hash of the subname is a squat, which gives way to it; a subname is taken.

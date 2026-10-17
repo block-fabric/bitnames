@@ -158,19 +158,38 @@ A host name ending with a dot is absolute (`example.com.`); otherwise it is unde
 
 A domain `a.b.core.x` resolves down from `core`: for each label, a subname on the chain first,
 then the `map` of the records, then `*`. `resolvename www.core.x A` shows what the DNS server
-answers.
+answers. Where the last two labels before `.x` are an ICANN-marked name (`example.com`), the domain
+resolves down from that name instead, as the wallet's commands read `example.com` and
+`pay.example.com`: never the subname `example` of `com`, which the holder of `com` could make.
+
+The wallet writes only host names as the targets of CNAME, NS, MX and SRV records (labels of
+letters, digits, `-` and `_`, at most 253 characters) and labels as the hosts of the map; records
+the chain holds are anyone's JSON, and the DNS server leaves out of its answers a target that is not
+a host name. An address may be anything, a private one (10.x, 192.168.x, 127.x) too: a name that
+points to the local network lets the pages of whoever holds it reach that network (DNS rebinding),
+as any domain can. The app warns about such addresses.
+
+**Punycode.** The chain takes names and subnames whose labels start with `xn--` (IDNA). Browsers
+may show them as letters of another script (`xn--pple-43d.x` as an "apple" with a Cyrillic a), a
+look-alike of another name; the wallet does not make them (`reservename`, `registername` and
+`createsubname` refuse them), and the app shows names as their ASCII text.
 
 ## The DNS server
 
-Start the node with `-dnsbind=127.0.0.1:5335` (or `dnsbind=127.0.0.1:5335` in `bitnames.conf`);
-it answers DNS questions for `.x` over UDP (TTL 60 seconds), and refuses the others. Answers too
+Start the node with `-dnsbind=127.0.0.1:5335` (or `dnsbind=127.0.0.1:5335` in `bitnames.conf`;
+`-dnsbind` alone listens on 127.0.0.1:5335; it is off by default, and `-nodnsbind` or `dnsbind=0`
+keep it off); it answers DNS questions for `.x` over UDP (TTL 60 seconds), and refuses the others. Answers too
 large for a UDP datagram of 512 bytes are sent empty with the TC bit set. Each source (an IPv4
 address, or an IPv6 /64) gets at most 20 answers a second (with bursts of 40), and the server at
 most 200 a second in all (bursts of 400); questions beyond that get no answer, so that the server
 cannot be used to flood a forged source address. Of 10000 sources remembered, those whose bucket is
 full again are forgotten when a new one comes, at most once a second. A question has at most 16
 labels, and an answer reads at most 48 names of the chain (labels, delegations and the subnames
-they name), under the chain's lock; beyond that it is SERVFAIL. Bind it to a local address unless it is meant to serve others. Then send the
+they name), under the chain's lock; beyond that it is SERVFAIL. Bind it to a local address unless it is meant to serve others:
+an address that is not loopback is warned about in the log, and a wildcard address (`0.0.0.0`, `::`,
+every interface) is refused unless `-dnsbindany=1` is set too. The rate limit is one bucket for all
+sources too, so a server reachable from the network can be kept busy by anyone; answers larger than
+512 bytes cannot be had at all (no TCP, no EDNS). Then send the
 `.x` questions of the computer to it:
 
 - **Linux, systemd-resolved:** `resolvectl dns lo 127.0.0.1:5335` and `resolvectl domain lo ~x`
