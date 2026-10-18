@@ -12,6 +12,7 @@
   import NoWallet from '../../components/NoWallet.svelte';
   import SafeText from '../../components/SafeText.svelte';
   import PendingCard from '../../components/PendingCard.svelte';
+  import { blockSeconds } from '../../lib/pending.svelte';
   import { ask, errorText, inform, prepareConfirm, walletRpc } from '../../lib/dialogs.svelte';
   import { formatTime, shortHash } from '../../lib/format';
   import { t, tn } from '../../lib/i18n.svelte';
@@ -26,7 +27,8 @@
   $effect(() => startNames());
 
   const noWallet = $derived(!walletsEnabled() || wallets.current === null);
-  const spacing = $derived(app.info?.blockSpacing ?? 60);
+  // The pace of the last blocks (a sidechain follows its mainchain), else the target: as the progress cards say it.
+  const spacing = $derived(blockSeconds(node.recent, app.info?.blockSpacing ?? 60));
   const tip = $derived(node.tip?.height ?? bn.height);
   const depth = $derived(bn.info?.revealdepth ?? 0);
 
