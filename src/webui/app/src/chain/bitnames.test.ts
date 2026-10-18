@@ -72,7 +72,24 @@ function fail(message: string, code = -8): never {
   throw Object.assign(new Error(message), { code });
 }
 
+// The questions the host asked (each a dialog on the desktop) and the second steps it was told to run without one
+// (confirm.h Authorizations: [wallet, method, params] as JSON).
+const asked: string[] = [];
+const authorized: string[] = [];
+
 async function fakeNode(r: BridgeRequest): Promise<unknown> {
+  if (r.method === 'rpc.confirmed') {
+    const c = r.params as { method: string; params: unknown[]; wallet?: string; then?: { method: string; params: unknown[] }; authorizedOnly?: boolean };
+    const key = JSON.stringify([c.wallet, c.method, c.params]);
+    const i = authorized.indexOf(key);
+    if (i >= 0) authorized.splice(i, 1);
+    else if (c.authorizedOnly) fail(`${c.method} needs your confirmation`, -32801);
+    else asked.push(c.then ? `${c.method}+${c.then.method}` : c.method);
+    const result = await fakeNode({ ...r, kind: 'rpc', method: c.method, params: c.params, wallet: c.wallet } as BridgeRequest);
+    if (!c.then) return result;
+    authorized.push(JSON.stringify([c.wallet, c.then.method, c.then.params]));
+    return { ...(result as object), authorized: 3600 };
+  }
   calls.push(r);
   const p = (r.params ?? []) as unknown[];
   switch (r.method) {
@@ -188,6 +205,8 @@ beforeEach(() => {
   store = null;
   info = { names: 0, reservations: 0, icann: false, revealdepth: 2, dns: '127.0.0.1:5335' };
   calls.length = 0;
+  asked.length = 0;
+  authorized.length = 0;
   resetNames();
   setTransport(fakeNode);
 });
@@ -338,9 +357,10 @@ describe('the pages of BitNames', () => {
     await waitFor(() => expect(screen.getByText('is free')).toBeTruthy());
     await fireEvent.input(document.querySelector('#name-ipv4')!, { target: { value: '198.51.100.9' } });
     await fireEvent.click(document.querySelector('#name-get')!);
-    await answer('yes');
     await waitFor(() => expect(called('reservename').length).toBe(1));
     expect(called('reservename')[0].params).toEqual(['carol']);
+    // One question, the host's, for both steps (no question of the page first).
+    expect(asked).toEqual(['reservename+registername']);
     // Kept by the host, so that it goes on after a restart.
     await waitFor(() => expect((store as { registrations: Registration[] }).registrations).toMatchObject([{ wallet: 'w', name: 'carol', public: true, step: 'reserved', reserveTxid: tx('r'), data: { ipv4: '198.51.100.9' } }]));
     await waitFor(() => expect(screen.getByRole('listitem', { name: 'Registration of carol.x' })).toBeTruthy());
@@ -357,6 +377,8 @@ describe('the pages of BitNames', () => {
     await refreshNames();
     await waitFor(() => expect(called('registername').length).toBe(1));
     expect(called('registername')[0].params).toEqual(['carol', { ipv4: '198.51.100.9' }, true]);
+    // Without a second question.
+    expect(asked).toEqual(['reservename+registername']);
     await waitFor(() => expect(screen.getByText(/should be in a block by block 24/)).toBeTruthy());
     // In block 23: yours.
     wallettx[tx('g')] = { confirmations: 1, blockheight: 23 };
@@ -383,6 +405,9 @@ describe('the pages of BitNames', () => {
     await loaded();
     await waitFor(() => expect(screen.getByText(/register it now \(the wallet asks for its passphrase\)/)).toBeTruthy());
     expect(called('registername').length).toBe(0);
+    // Never a dialog by itself: its card asks for the user's confirmation.
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Confirm registration' }).length).toBeGreaterThan(0));
+    expect(asked).toEqual([]);
     await waitFor(() => expect(screen.getByText(/Someone else registered this name first/)).toBeTruthy());
     // What does not have the shape of a registration is dropped.
     expect(screen.queryByText(/BAD name/)).toBeNull();
@@ -689,7 +714,6 @@ describe('Simple mode on BitNames', () => {
     expect(screen.getByText(/What it costs: nothing but two small network/)).toBeTruthy();
     expect(document.querySelector('#name-ipv4')).toBeNull();
     await fireEvent.click(document.querySelector('#name-get')!);
-    await answer('yes');
     await waitFor(() => expect(called('reservename').length).toBe(1));
     expect(called('reservename')[0].params).toEqual(['carol']);
     await waitFor(() => expect((store as { registrations: Registration[] }).registrations).toMatchObject([{ wallet: 'w', name: 'carol', public: true, step: 'reserved' }]));

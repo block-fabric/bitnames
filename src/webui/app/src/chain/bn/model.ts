@@ -399,6 +399,11 @@ export interface Registration {
   started: number;
   updated: number;
   error?: string;
+  /**
+   * Deep enough, and the host would have to ask (no authorization since the app started again, or a locked wallet):
+   * the user confirms it on its card. Not kept in the store.
+   */
+  needsConfirm?: string;
 }
 
 export type StageId = 'reserve' | 'confirm' | 'wait' | 'register' | 'yours';

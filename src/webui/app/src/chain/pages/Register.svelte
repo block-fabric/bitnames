@@ -11,7 +11,8 @@
   import Icon from '../../components/Icon.svelte';
   import NoWallet from '../../components/NoWallet.svelte';
   import SafeText from '../../components/SafeText.svelte';
-  import { ask, errorText, inform, walletRpc } from '../../lib/dialogs.svelte';
+  import PendingCard from '../../components/PendingCard.svelte';
+  import { ask, errorText, inform, prepareConfirm, walletRpc } from '../../lib/dialogs.svelte';
   import { formatTime, shortHash } from '../../lib/format';
   import { t, tn } from '../../lib/i18n.svelte';
   import { go, goTo, PAGES, takeFocus } from '../../lib/nav.svelte';
@@ -19,9 +20,8 @@
   import { app, node, toast, wallets, walletsEnabled } from '../../lib/state.svelte';
   import '../bn/bn.css';
   import Domain from '../bn/Domain.svelte';
-  import StepTrack from '../bn/StepTrack.svelte';
   import { blocksTime, dataProblem, handleOf, newNameProblem, progressOf, subnameProblem, TLD, type NameInfo, type Registration } from '../bn/model';
-  import { beginRegistration, bn, forget, registerNow, registrationsOf, releaseRegistration, startNames, walletLocked } from '../bn/store.svelte';
+  import { beginRegistration, bn, forget, pendingOpOf, registerNow, registrationsOf, releaseRegistration, startNames, walletLocked } from '../bn/store.svelte';
 
   $effect(() => startNames());
 
@@ -111,19 +111,8 @@
     if (wallet === null || busy) return;
     if (verdict.kind === 'free') {
       const name = typed;
-      const r = await ask({
-        title: t('Get the name'),
-        message: tn('Reserve %1 now, and register it once the reservation is %n block(s) deep?', depth, `${name}.${TLD}`),
-        informative: makePublic
-          ? t('Public: its text is on the chain, so anyone can find it by name. Two small transactions of the wallet pay their fees.')
-          : t('Private: only its hash is on the chain; it works the same, but only those who know it can find it. Two small transactions of the wallet pay their fees.'),
-        level: 'question',
-        choices: [
-          { id: 'no', label: 'Cancel' },
-          { id: 'yes', label: 'Get it', kind: 'primary' },
-        ],
-      });
-      if (r.choice !== 'yes') return;
+      // One question, the host's: both steps (the reservation now, the registration once deep enough, sent by the app
+      // without asking again), their fees and the details (store.svelte.ts beginRegistration).
       busy = true;
       try {
         const reg = await beginRegistration(wallet, name, makePublic, ipv4.trim() ? { ipv4: ipv4.trim() } : {});
@@ -165,6 +154,11 @@
       }
     }
   }
+
+  // A free name typed: the question of the host is likely, its window is made ahead (it shows at once).
+  $effect(() => {
+    if (verdict.kind === 'free') prepareConfirm();
+  });
 
   // --- The registrations under way ---
   const mine = $derived(registrationsOf(wallets.current));
@@ -285,8 +279,9 @@
             <div class="row">
               <button type="submit" class="btn cta" id="name-get" disabled={busy || !!ipProblem || (verdict.kind === 'sub-free' && !!holder.trim() && !holderValid)}>
                 <Icon name="plus" size={16} />
-                {verdict.kind === 'free' ? t('Get %1', `${typed}.${TLD}`) : t('Make %1', `${typed}.${TLD}`)}
+                {busy && verdict.kind === 'free' ? t('Waiting for your confirmation…') : verdict.kind === 'free' ? t('Get %1', `${typed}.${TLD}`) : t('Make %1', `${typed}.${TLD}`)}
               </button>
+              {#if busy && verdict.kind === 'free'}<span class="faint small" role="status">Confirm both steps in the window of the app.</span>{/if}
               {#if balance !== null && balance === 0n}<span class="bn-error">The wallet has no coins for the fees: deposit some first (Peg).</span>{/if}
             </div>
           </form>
@@ -310,11 +305,12 @@
                 <span class="badge" class:accent={r.step === 'done'} class:danger={r.step === 'failed'}>{r.step === 'done' ? t('Yours') : r.step === 'failed' ? t('Stopped') : r.public ? t('Public') : t('Private')}</span>
                 <span class="faint small">{t('since %1', formatTime(r.started, true))}</span>
               </div>
-              {#if r.step !== 'failed'}<StepTrack progress={p} />{/if}
+              <!-- Its progress; its error is said below, once. -->
+              <PendingCard op={{ ...pendingOpOf(r, tip, depth), error: undefined }} />
               <p class="step" class:bn-error={r.step === 'failed' || p.late}>{#if r.step === 'failed'}<SafeText text={stepLine(r)} />{:else}{stepLine(r)}{/if}</p>
               {#if r.error && r.step !== 'failed'}<p class="bn-error"><SafeText text={r.error} /></p>{/if}
               <div class="row">
-                {#if r.step === 'reserved' && p.stage === 'register'}<button type="button" class="btn primary small" disabled={busy} onclick={() => registerManually(r)}>Register now</button>{/if}
+                {#if r.step === 'reserved' && p.stage === 'register' && r.needsConfirm === undefined && !r.error}<button type="button" class="btn small" disabled={busy} onclick={() => registerManually(r)}>Register now</button>{/if}
                 {#if r.step === 'done'}
                   <button type="button" class="btn small" onclick={() => openName(r)}>{simple ? 'See it' : 'Records and more'}</button>
                   <button type="button" class="btn small ghost" onclick={() => forget(r)}>Dismiss</button>

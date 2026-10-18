@@ -141,13 +141,35 @@ std::set<std::string> KeyedRpcMethods()
     return {"getnewnamekeys", "decryptnamemessage", "listpaymail"};
 }
 
+namespace {
+/** The second step of reservename: registername of the same name, [name, data, public]. */
+confirm::Reveal RegisterAfterReserve()
+{
+    confirm::Reveal reveal;
+    reveal.method = "registername";
+    reveal.title = "Get a name";
+    reveal.accept = "Reserve and register";
+    reveal.first_label = "Reservation";
+    reveal.second_label = "Registration";
+    reveal.what = "Two transactions: the reservation hides the name until it is deep enough, so that nobody who sees it coming can "
+                  "take it first; the registration then makes it yours, with the data below.";
+    reveal.matches = confirm::SameFirstParam;
+    // A registration spends the reservation and makes the name's output and the change; its data adds to it.
+    reveal.second_vsize = [](const UniValue& params) { return int64_t{300} + (params.size() > 1 ? static_cast<int64_t>(params[1].write().size()) : 0); };
+    reveal.when = confirm::AfterDepth("getbitnamesinfo", "revealdepth");
+    return reveal;
+}
+} // namespace
+
 std::map<std::string, confirm::Method> ConfirmedRpcMethods()
 {
     // What the pages do that pays or signs: never the page's to call by itself. The host shows each call on the desktop, its
     // destinations whole first, then its amounts, then the rest of its parameters, with the passphrase of a locked wallet
     // typed there, and runs it with the keys unlocked for it alone (confirm.h, audit 7 #1).
     return {
-        {"reservename", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Reserve a name", "Reserve", "The wallet pays for a reservation of a name, which hides it until it is registered."), /*fee_unknown=*/true}},
+        // Reserved and registered in one question: the registration, exactly as shown, is sent by the app without asking
+        // again once the reservation is deep enough (confirm::Reveal).
+        {"reservename", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Reserve a name", "Reserve", "The wallet pays for a reservation of a name, which hides it until it is registered."), /*fee_unknown=*/true, 1, false, RegisterAfterReserve()}},
         {"registername", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Register a name", "Register", "The wallet registers a name it reserved, to the owner shown."), /*fee_unknown=*/true}},
         {"releasereservation", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Release a reservation", "Release", "The wallet gives up a reservation of a name."), /*fee_unknown=*/true}},
         {"updatename", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Update a name", "Update", "The wallet signs a change of a name it owns."), /*fee_unknown=*/true}},

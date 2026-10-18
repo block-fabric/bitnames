@@ -74,9 +74,10 @@
       await check(`${theme}: what it costs, no address to type`, !$('#name-ipv4'));
       await shot(`bn-simple-register-free-${theme}`);
       if (theme === 'midnight') {
+        // One question, the host's (answered by the test hooks): no question of the page first.
         $('#name-get').click();
-        const d = await waitFor('the confirmation', () => openDialog());
-        button('Get it', d).click();
+        await sleep(500);
+        await check('no question of the page before the host', !openDialog() || /Synchronizing/.test(openDialog().textContent));
         await waitFor('the registration on its way', () => $$(`[aria-label="Registration of ${NAME}.x"]`).length === 1, 30000);
         await waitFor('the name yours', () => /Yours since block/.test(text(`[aria-label="Registration of ${NAME}.x"]`)), 300000);
         await check('the name taken through Simple mode', !!(await getname(NAME)));

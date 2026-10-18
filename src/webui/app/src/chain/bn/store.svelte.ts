@@ -9,7 +9,9 @@
 // store takes each one a step further: the block of the reservation, the registration sent once it may be in
 // the next block (at once if the wallet needs no passphrase; else the page asks), the block that registered it.
 import { request } from '../../lib/bridge';
-import { errorText, walletRpc } from '../../lib/dialogs.svelte';
+import { errorText, walletRpc, walletRpcIfAuthorized, walletRpcTwoSteps } from '../../lib/dialogs.svelte';
+import { go } from '../../lib/nav.svelte';
+import { publishPending, type PendingOp } from '../../lib/pending.svelte';
 import { t } from '../../lib/i18n.svelte';
 import { every } from '../../lib/poll';
 import { rpc } from '../../lib/rpc';
@@ -58,7 +60,7 @@ function sanitize(raw: unknown): Registration[] {
       const x = r as Record<string, unknown>;
       return typeof x.wallet === 'string' && typeof x.name === 'string' && /^[a-z0-9_-]{1,255}$/.test(x.name) && typeof x.reserveTxid === 'string' && /^[0-9a-f]{64}$/.test(x.reserveTxid) && ['reserved', 'registering', 'done', 'failed'].includes(String(x.step));
     })
-    .map((r) => ({ ...r, public: !!r.public, started: Number(r.started) || now, updated: Number(r.updated) || now }))
+    .map((r) => ({ ...r, public: !!r.public, started: Number(r.started) || now, updated: Number(r.updated) || now, needsConfirm: undefined }))
     .filter((r) => !(r.step === 'done' && now - r.updated > KEEP_DONE))
     .slice(-MAX_REGISTRATIONS);
 }
@@ -74,8 +76,11 @@ async function loadStore(): Promise<void> {
 }
 
 async function saveStore(): Promise<void> {
+  publish();
   try {
-    await request('host', 'bitnames.store.save', { value: { registrations: $state.snapshot(bn.registrations) } });
+    // What the host would ask about now is not kept: after a restart it is known again.
+    const registrations = $state.snapshot(bn.registrations).map(({ needsConfirm: _, ...r }) => r);
+    await request('host', 'bitnames.store.save', { value: { registrations } });
   } catch (e) {
     if (!storeWarned) {
       storeWarned = true;
@@ -136,7 +141,9 @@ async function blockOf(wallet: string, txid: string): Promise<number | null> {
  */
 export async function beginRegistration(wallet: string, name: string, isPublic: boolean, data: Record<string, string> = {}): Promise<Registration | null> {
   await loadStore();
-  const done = await walletRpc<{ txid: string; namehash: string }>(wallet, 'reservename', [name]);
+  // Both steps in one question of the host: the reservation now, and the registration exactly as shown, which the app
+  // then sends by itself without asking again (confirm.h, Reveal; local.cpp RegisterAfterReserve).
+  const done = await walletRpcTwoSteps<{ txid: string; namehash: string }>(wallet, 'reservename', [name], { method: 'registername', params: registerParams({ name, data, public: isPublic }) });
   if (!done) return null;
   const now = Math.floor(Date.now() / 1000);
   const r: Registration = { wallet, name, public: isPublic, step: 'reserved', reserveTxid: done.txid, started: now, updated: now, ...(Object.keys(data).length ? { data } : {}) };
@@ -152,21 +159,78 @@ export async function beginRegistration(wallet: string, name: string, isPublic: 
  * kept quiet.
  */
 export async function registerNow(r: Registration, interactive: boolean): Promise<boolean> {
-  if (!interactive && walletLocked(r.wallet)) return false;
   try {
-    const done = await walletRpc<{ txid: string }>(r.wallet, 'registername', [r.name, r.data ?? {}, r.public]);
-    if (!done) return false;
-    update(r, { step: 'registering', registerTxid: done.txid, registerSent: node.tip?.height ?? bn.height, error: undefined });
+    let txid: string;
+    if (interactive) {
+      const done = await walletRpc<{ txid: string }>(r.wallet, 'registername', registerParams(r));
+      if (!done) return false;
+      txid = done.txid;
+    } else {
+      // By itself: only what the user accepted with the reservation, never a question; else its card asks.
+      const done = await walletRpcIfAuthorized<{ txid: string }>(r.wallet, 'registername', registerParams(r));
+      if ('needed' in done) {
+        if (r.needsConfirm === undefined) {
+          update(r, { needsConfirm: done.needed });
+          toast('info', t('%1 is ready to register', `${r.name}.x`), t('Confirm its registration on its card in Get a name.'), 12000, [{ label: t('Confirm'), run: () => void registerByUser(r) }]);
+          await saveStore();
+        }
+        return false;
+      }
+      txid = done.result.txid;
+    }
+    update(r, { step: 'registering', registerTxid: txid, registerSent: node.tip?.height ?? bn.height, error: undefined, needsConfirm: undefined });
     await saveStore();
     return true;
   } catch (e) {
     const why = errorText(e);
     if (!interactive && /can be revealed from block/.test(why)) return false;
+    if (!interactive && r.error !== why) toast('error', t('%1 was not registered', `${r.name}.x`), why, 12000, [{ label: t('Try again'), run: () => void registerByUser(r) }]);
     update(r, { error: why });
     await saveStore();
     if (interactive) throw e;
     return false;
   }
+}
+
+/** The parameters of registername for a registration: [name, data, public], the same in its question and when sent. */
+export function registerParams(r: Pick<Registration, 'name' | 'data' | 'public'>): unknown[] {
+  return [r.name, r.data ?? {}, r.public];
+}
+
+/** The user registers it from its card or a toast (asked as the host asks). */
+async function registerByUser(r: Registration): Promise<void> {
+  const now = bn.registrations.find((x) => x.wallet === r.wallet && x.reserveTxid === r.reserveTxid) ?? r;
+  try {
+    await registerNow(now, true);
+  } catch {
+    // Said on its card.
+  }
+}
+
+/**
+ * The progress of a registration, for its card (components/PendingCard.svelte) and the indicator of the top bar:
+ * reserved, waiting for the depth (block k of revealdepth), the user's word needed, sent, registered.
+ */
+export function pendingOpOf(r: Registration, tip = bn.height, revealdepth = bn.info?.revealdepth ?? 1): PendingOp {
+  const needed = Math.max(1, revealdepth);
+  const base = { key: `${r.wallet}\u0000${r.reserveTxid}`, what: t('Name'), name: `${r.name}.x`, wallet: r.wallet, needed, page: 'register' as const };
+  if (r.step === 'done') return { ...base, stage: 'done', depth: needed, ended: r.updated * 1000 };
+  if (r.step === 'failed') return { ...base, stage: 'failed', depth: null, error: r.error, ended: r.updated * 1000 };
+  if (r.step === 'registering') return { ...base, stage: 'registering', depth: needed };
+  if (r.reserveHeight === undefined) return { ...base, stage: 'reserved', depth: null };
+  const left = Math.max(0, r.reserveHeight + revealdepth - (tip + 1));
+  const depth = Math.max(0, needed - left);
+  if (left > 0) return { ...base, stage: 'waiting', depth };
+  if (r.needsConfirm !== undefined || r.error) {
+    return { ...base, stage: 'confirm', depth, error: r.error, action: { label: r.error ? 'Try again' : 'Confirm registration', run: () => void registerByUser(r) } };
+  }
+  return { ...base, stage: 'waiting', depth };
+}
+
+/** What this store is doing, for the indicator of the top bar (lib/pending.svelte.ts). */
+function publish(): void {
+  const wallet = wallets.current;
+  publishPending('bitnames', bn.registrations.filter((r) => r.wallet === wallet).map((r) => pendingOpOf(r)));
 }
 
 /** Give up a registration: its reservation released, if it is in a block. */
@@ -220,7 +284,7 @@ async function advance(wallet: string, tip: number, info: BitNamesInfo, mine: My
         changed = true;
       } else if (at && at > 0) {
         update(r, { step: 'done', registeredHeight: at, error: undefined });
-        toast('success', t('The name is yours'), t('%1 was registered in block %2.', `${r.name}.x`, at));
+        toast('success', t('The name is yours'), t('%1 was registered in block %2.', `${r.name}.x`, at), 8000, [{ label: t('Open'), run: () => go('names') }]);
         changed = true;
       }
     }
@@ -283,6 +347,7 @@ async function refreshOnce(): Promise<void> {
       bn.inflight = still;
     }
     if (wallet !== null && storeLoaded && (await advance(wallet, tip, info, mine))) await saveStore();
+    publish();
   } catch (e) {
     bn.error = errorText(e);
     bn.loaded = true;

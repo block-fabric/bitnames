@@ -88,9 +88,52 @@
     set(await waitFor('the name free', () => $('.bn-verdict.free') && $('#name-ipv4'), 20000), '203.0.113.7');
     await sleep(300);
     await shot('bn-register-free');
+    // One question of the host for both steps, in its themed window (never the dialog of the system), shown at once
+    // (made ahead when the name was free); the page and the host stay responsive meanwhile; then no second question.
+    const dialog = (action, more = {}) => host('test.dialog', { action, ...more });
+    let maxGap = 0;
+    let lastTick = performance.now();
+    const ticker = setInterval(() => {
+      const n = performance.now();
+      maxGap = Math.max(maxGap, n - lastTick - 50);
+      lastTick = n;
+    }, 50);
+    let maxHost = 0;
+    let probing = true;
+    const probe = (async () => {
+      while (probing) {
+        const t0 = performance.now();
+        // A call on the UI thread of the host: a frozen window would never answer it (said, not waited for forever).
+        const answered = await Promise.race([host('window.state').then(() => true), sleep(20000).then(() => false)]);
+        maxHost = Math.max(maxHost, performance.now() - t0);
+        if (!answered) await log('the UI thread of the host did not answer window.state in 20 s');
+        await sleep(100);
+      }
+    })();
+    await host('test.confirmAnswer', { always: false });
+    await host('test.confirmAnswer', { show: true });
+    const asked0 = (await host('test.confirmed', {})).length;
+    const t0 = performance.now();
     await clickId('name-get');
-    await answerDialog('Get the name', 'Get it');
+    const kinds = [];
+    let kind = '';
+    for (let i = 0; i < 300 && kind !== 'themed' && kind !== 'native'; i++) {
+      kind = await dialog('kind');
+      if (kinds[kinds.length - 1] !== kind) kinds.push(kind);
+      if (kind !== 'themed') await sleep(50);
+    }
+    const shownIn = Math.round(performance.now() - t0);
+    await check('the name is asked in the themed dialog of the host, never the dialog of the system', kind === 'themed' && !kinds.includes('native'), JSON.stringify(kinds));
+    await check('the dialog shows at once (made ahead)', shownIn < 3000, `${shownIn} ms`);
+    await check('no question of the page before it', !openDialog() || /Synchronizing/.test(openDialog().textContent));
+    const facts = await dialog('eval', { script: `({ text: document.body.innerText, theme: document.documentElement.dataset.theme })` });
+    await check('one question shows both steps, the details and the fees', /Step 1 of 2/.test(facts.text) && /Step 2 of 2/.test(facts.text) && /registername/.test(facts.text) && /203\.0\.113\.7/.test(facts.text) && /Step 2, at most/.test(facts.text), facts.text);
+    await check('in the theme of the app (Midnight)', facts.theme === 'midnight', facts.theme);
+    await dialog('snapshot', { name: 'bn-register-one-confirmation' });
+    await sleep(1500);
+    await dialog('eval', { script: `document.getElementById('dialog-accept').click(); true` });
     await waitFor('the registration on its way', () => $$('[aria-label="Registration of satoshi.x"]').length === 1, 30000);
+    await host('test.confirmAnswer', { always: true });
     await check('the reservation sent: the name hidden', (await rpc('listmynames', [], 'bn')).some((m) => m.kind === 'reservation') || (await rpc('getmempoolinfo')).size > 0);
     const reg = '[aria-label="Registration of satoshi.x"]';
     await waitFor('the reservation in a block', () => /Hidden for|Deep enough|Revealed:|Yours since/.test(text(reg)), 120000);
@@ -101,6 +144,12 @@
     }, 240000);
     await check('the name taken in two steps, its address set, public', registered.name === NAME && registered.data.ipv4 === '203.0.113.7', JSON.stringify(registered));
     await waitFor('the page says it is yours', () => /Yours since block/.test(text(reg)), 60000);
+    const again = (await host('test.confirmed', {})).slice(asked0);
+    await check('one question in all for both steps: the registration was not asked again', again.length === 1 && !again.some((q) => q.title === 'Register a name'), JSON.stringify(again.map((q) => q.title)));
+    probing = false;
+    await Promise.race([probe, sleep(25000)]);
+    clearInterval(ticker);
+    await check('the page and the host stayed responsive throughout (no frozen window)', maxGap < 1000 && maxHost < 1000, `page ${Math.round(maxGap)} ms, host ${Math.round(maxHost)} ms`);
     await sleep(600);
     await shot('bn-register-done');
     // A taken name, said as it is typed.
