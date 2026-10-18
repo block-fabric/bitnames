@@ -49,7 +49,9 @@ inline constexpr std::string_view PAGE{"/dialog.html"};
 //! The name of the bridge of the dialog's web view.
 inline constexpr std::string_view BRIDGE{"__chainsDialog"};
 //! How long the page has to say it is ready before the dialog of the system is shown instead (milliseconds).
-inline constexpr int READY_TIMEOUT_MS{10000};
+//! Long enough for a busy computer (a web process to start, on a desktop under load); the window is made ahead where it can
+//! be (Window::PrepareDialog), so that it shows at once.
+inline constexpr int READY_TIMEOUT_MS{30000};
 
 //! How grave what is asked is: the colour of the icon and of the button that accepts.
 enum class Level { INFO, WARNING, DANGER };

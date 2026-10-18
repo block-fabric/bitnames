@@ -277,9 +277,53 @@ Rules the code keeps:
   at first: the safe default), Tab stays in the dialog, and the button that
   accepts takes no click or key for 400 ms after the window shows. One dialog at
   a time: the ones asked meanwhile wait their turn (`dialog::Pending`). Without
-  the window (its web view cannot be made, its page fails or says nothing in 10
+  the window (its web view cannot be made, its page fails or says nothing in 30
   s), the same question is asked in the dialog of the system: never an answer
-  the user did not give. File choosers stay the system's (the page reads files
+  the user did not give. Where a question is likely soon (the review of a
+  payment or of a registration), the page asks the host to make the window
+  ahead (`dialog.prepare`, GTK): its web process started and its page loaded,
+  it shows at once when asked, where a busy computer took seconds to make one
+  (an app that looked frozen) and past 10 s fell back to the dialog of the
+  system (the unthemed registration dialog of 2026-10-18). The window made
+  ahead holds the page's `hello` until a question comes and answers nothing
+  else; unused, it goes after 3 minutes.
+* **Two steps, one question** (confirm.h `Reveal`, `Authorizations`). Taking a
+  name or an asset is a commitment, then its reveal some blocks later (the
+  reveal depth protects the name from whoever sees the reveal first). The page
+  asks for both at once (`rpc.confirmed {method, params, wallet, then: {method,
+  params}}`): the host checks that the second is the declared second step of
+  the first, of the same name (`Reveal::matches`), canonicalizes both, and asks
+  one question that shows each step whole, their network fees (about, and the
+  most the second may pay: twice its fee now) and when the second runs. Only
+  if the user accepts and the first ran does the host keep an authorization,
+  in its memory alone, bound to: the wallet; the method and the canonical
+  parameters of the second step, compared as JSON (any difference: name,
+  supply, decimals, data, records, publication, is another call); the first
+  step's transaction, which must still be in that wallet, not replaced nor
+  abandoned, when the second comes; the fee cap (the wallet's fee for it then
+  must not be more); and an hour. The matching call runs without a question,
+  one at a time: the authorization is taken before it runs, and given back if
+  the call failed (nothing was made). Once it made its transaction, the method
+  never runs again under it (a new transaction could pay twice while the first
+  may still confirm, after a reorganisation or from another node's mempool):
+  the same call only broadcasts that very transaction again
+  (`sendrawtransaction` of the wallet's copy) if it left the mempool without a
+  block (the pages' resend after two blocks), at most three times; while it
+  waits in the mempool nothing happens; in a block, conflicted, abandoned, gone,
+  or refused by the mempool, the authorization is used up and the call is
+  asked as any other (the registration made then, after the user's yes,
+  abandons the dropped one itself). One transaction, however often the page
+  asks. Anything else is asked as before; with
+  `authorizedOnly` (what the pages send when they register by themselves) it
+  is refused instead (`BRIDGE_AUTH_NEEDED`), so the page shows "Confirm
+  registration" on its card rather than a dialog out of nowhere. A locked
+  wallet still needs its passphrase for the second step: asked in the dialog of
+  the host, saying it was accepted with the first (never without a question).
+  An app that starts again has no authorization (they are not written
+  anywhere). The page never sees or names an authorization: it cannot make
+  one without the user's yes to the question that shows exactly that second
+  step, nor widen it (other parameters, another wallet, a higher fee, later),
+  nor use it twice. File choosers stay the system's (the page reads files
   only through them), dark or light as the app (GTK's prefer-dark setting while
   one shows; on Windows the preferred mode of the app, uxtheme's
   SetPreferredAppMode). The tests let a question show (`test.confirmAnswer`
