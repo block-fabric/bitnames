@@ -291,7 +291,7 @@
     await log(`NAME ${registered.namehash}`);
     {
       // The confirmations of the desktop: what the chain's pages paid or signed, each with its facts.
-      const titles = ["Change the records of a name", "Create a subname", "Register a name", "Release a name", "Release a reservation", "Reserve a name", "Send paymail", "Sign as a name", "Transfer a name", "Update a name"];
+      const titles = ["Get a name", "Change the records of a name", "Create a subname", "Register a name", "Release a name", "Release a reservation", "Reserve a name", "Send paymail", "Sign as a name", "Transfer a name", "Update a name"];
       const asked = (await host('test.confirmed', {})).filter((q) => titles.includes(q.title));
       await check(`the desktop confirmed what the pages paid or signed (${asked.length})`, asked.length > 0 && asked.every((q) => q.rows.length > 1), JSON.stringify(asked.map((q) => q.title)));
     }
