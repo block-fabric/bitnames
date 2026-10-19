@@ -49,6 +49,7 @@ dialog::Row Amount(std::string label, CAmount amount) { return {std::move(label)
 dialog::Row Total(std::string label, CAmount amount) { return {std::move(label), Coins(amount), dialog::Row::Kind::TOTAL}; }
 dialog::Row Heading(std::string label, std::string value) { return {std::move(label), std::move(value), dialog::Row::Kind::HEADING}; }
 dialog::Row Note(std::string text) { return {"", std::move(text), dialog::Row::Kind::NOTE}; }
+dialog::Row Image(std::string label, std::string data_url) { return {std::move(label), std::move(data_url), dialog::Row::Kind::IMAGE}; }
 
 std::vector<dialog::Row> WalletRows(const std::string& wallet)
 {

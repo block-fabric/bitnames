@@ -83,6 +83,10 @@ struct Row {
         HEADING,
         //! A line of text across the rows (what the host could not know before, such as a fee chosen later).
         NOTE,
+        //! A picture the host checked (a logo of the chain: dialog::IsImageDataUrl), its value a data: URL of a PNG or a
+        //! JPEG in base64 of at most MAX_IMAGE_URL characters; shown as an <img> only, never as markup. Anything else in
+        //! such a row is not shown (a note says so).
+        IMAGE,
     };
     std::string label;
     std::string value;
@@ -91,6 +95,11 @@ struct Row {
 
 //! The name of a kind of row, as the page reads it.
 std::string_view RowKindName(Row::Kind kind);
+
+//! The longest data: URL of a picture in a dialog (a logo of 32768 bytes in base64, and its prefix).
+constexpr size_t MAX_IMAGE_URL{44 * 1024};
+/** Whether a value is a picture a dialog shows: "data:image/png;base64," or "data:image/jpeg;base64," and base64 only, of at most MAX_IMAGE_URL. */
+bool IsImageDataUrl(std::string_view value);
 
 /** A question of the host. */
 struct Request {

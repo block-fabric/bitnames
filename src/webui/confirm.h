@@ -48,6 +48,8 @@ dialog::Row Amount(std::string label, CAmount amount);
 dialog::Row Total(std::string label, CAmount amount);
 dialog::Row Heading(std::string label, std::string value = {});
 dialog::Row Note(std::string text);
+//! A picture (dialog::Row::Kind::IMAGE): `data_url` a data: URL of PNG or JPEG bytes the host checked; else the dialog says it cannot show it.
+dialog::Row Image(std::string label, std::string data_url);
 
 /** The rows every confirmation of a wallet starts with: the wallet, the network. */
 std::vector<dialog::Row> WalletRows(const std::string& wallet);
