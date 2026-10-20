@@ -46,7 +46,8 @@ inline constexpr int MAX_DNS_READS{48};
 
 namespace dns {
 enum Type : uint16_t { A = 1, NS = 2, CNAME = 5, SOA = 6, MX = 15, TXT = 16, AAAA = 28, SRV = 33, TLSA = 52, ANY = 255 };
-enum Rcode : uint8_t { NOERROR = 0, FORMERR = 1, SERVFAIL = 2, NXDOMAIN = 3, NOTIMP = 4, REFUSED = 5 };
+// NOERR, not NOERROR: winerror.h defines NOERROR as a macro.
+enum Rcode : uint8_t { NOERR = 0, FORMERR = 1, SERVFAIL = 2, NXDOMAIN = 3, NOTIMP = 4, REFUSED = 5 };
 
 struct Record {
     //! The owner name, absolute, without the final dot.
@@ -58,7 +59,7 @@ struct Record {
 };
 
 struct Answer {
-    Rcode rcode{NOERROR};
+    Rcode rcode{NOERR};
     std::vector<Record> records;
 };
 

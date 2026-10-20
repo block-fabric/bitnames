@@ -151,8 +151,8 @@ struct NameData {
     friend bool operator==(const NameData&, const NameData&) = default;
 };
 
-/** How an update treats one field: delete it, leave it, or set it. */
-enum class UpdateKind : uint8_t { DELETE = 0, RETAIN = 1, SET = 2 };
+/** How an update treats one field: delete it (REMOVE: winnt.h defines DELETE as a macro), leave it, or set it. */
+enum class UpdateKind : uint8_t { REMOVE = 0, RETAIN = 1, SET = 2 };
 
 template <typename T>
 struct Update {

@@ -187,7 +187,7 @@ void ReadUpdate(const UniValue& obj, const std::string& key, Update<T>& update, 
 {
     if (!obj.exists(key)) return;
     if (obj[key].isNull()) {
-        update.kind = UpdateKind::DELETE;
+        update.kind = UpdateKind::REMOVE;
         return;
     }
     update.kind = UpdateKind::SET;

@@ -405,7 +405,7 @@ dns::Answer Resolve(const State& state, const std::string& qname, uint16_t qtype
     }
     Collector collector{name, base};
     Collect(node, qtype, collector);
-    collector.m_answer.rcode = NOERROR;
+    collector.m_answer.rcode = NOERR;
     return collector.m_answer;
 }
 

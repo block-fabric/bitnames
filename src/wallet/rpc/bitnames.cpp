@@ -455,9 +455,9 @@ RPCMethod transfername()
         // An update of the name, given on in the same transaction (the name updated is the one spent).
         const bitnames::NameData data{CurrentData(*pwallet, hash)};
         bitnames::NameUpdates updates;
-        if (data.encryption_key) updates.encryption_key.kind = bitnames::UpdateKind::DELETE;
-        if (data.signing_key) updates.signing_key.kind = bitnames::UpdateKind::DELETE;
-        if (data.paymail_fee) updates.paymail_fee.kind = bitnames::UpdateKind::DELETE;
+        if (data.encryption_key) updates.encryption_key.kind = bitnames::UpdateKind::REMOVE;
+        if (data.signing_key) updates.signing_key.kind = bitnames::UpdateKind::REMOVE;
+        if (data.paymail_fee) updates.paymail_fee.kind = bitnames::UpdateKind::REMOVE;
         if (!(updates == bitnames::NameUpdates{})) marker.operation = bitnames::UpdateName{updates};
     }
     const CTransactionRef tx{SendBitNames(*pwallet, marker, std::vector<CTxDestination>{dest}, {}, {owned->outpoint})};
@@ -901,7 +901,7 @@ RPCMethod setnamerecords()
     if (!owned) NotHeld(*pwallet, hash);
     bitnames::NameUpdates updates;
     if (request.params[1].empty()) {
-        updates.records.kind = bitnames::UpdateKind::DELETE;
+        updates.records.kind = bitnames::UpdateKind::REMOVE;
     } else {
         updates.records.kind = bitnames::UpdateKind::SET;
         updates.records.value = bitnames::RecordsFromRows(request.params[1]);

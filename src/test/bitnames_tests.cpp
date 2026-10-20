@@ -272,7 +272,7 @@ BOOST_AUTO_TEST_CASE(updates_keep_their_history)
     const TState before{state};
     TUndo block;
     NameUpdates updates;
-    updates.paymail_fee.kind = UpdateKind::DELETE;
+    updates.paymail_fee.kind = UpdateKind::REMOVE;
     updates.commitment.kind = UpdateKind::SET;
     updates.commitment.value = uint256{3};
     BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{Tx({COutPoint{reg.GetHash(), 0}}, 1, 0, UpdateName{updates}, 3)}, 3, params, block, reason), reason);
@@ -323,7 +323,7 @@ BOOST_AUTO_TEST_CASE(history_kept_apart)
         for (int i{0}; i < (height % 3 == 0 ? 2 : 1); ++i) {
             NameUpdates updates;
             const bool remove{height % 7 == 0 && i == 0};
-            updates.paymail_fee.kind = remove ? UpdateKind::DELETE : UpdateKind::SET;
+            updates.paymail_fee.kind = remove ? UpdateKind::REMOVE : UpdateKind::SET;
             if (!remove) updates.paymail_fee.value = height * 10 + i;
             const CMutableTransaction tx{Tx({holder}, 1, 0, UpdateName{updates}, ++salt)};
             BOOST_REQUIRE_MESSAGE(state.ApplyTx(CTransaction{tx}, height, params, undo, reason), reason);
@@ -418,7 +418,7 @@ BOOST_AUTO_TEST_CASE(icann_names)
         BOOST_CHECK(ParseNameArg(UniValue{"example.com"}, shadowed.View()) == name);
         // DNS reads it as the wallet does: example.com.x is the ICANN name, not the subname of com (audit 7
         // E-BN3); the subname answers by its hash only.
-        BOOST_CHECK_EQUAL(Resolve(shadowed, "example.com.x", dns::A).rcode, dns::NOERROR);
+        BOOST_CHECK_EQUAL(Resolve(shadowed, "example.com.x", dns::A).rcode, dns::NOERR);
         BOOST_CHECK(Resolve(shadowed, "example.com.x", dns::A).records.empty());
         BOOST_CHECK(state.Names().at(name).icann);
         // Under it: subnames of the ICANN name, never of the subname of com.
@@ -1218,14 +1218,14 @@ BOOST_AUTO_TEST_CASE(marker_roundtrip_every_kind)
     reg_text.text = "core";
     NameUpdates all_kinds;
     all_kinds.commitment = {UpdateKind::SET, uint256{3}};
-    all_kinds.ipv4 = {UpdateKind::DELETE, std::nullopt};
+    all_kinds.ipv4 = {UpdateKind::REMOVE, std::nullopt};
     all_kinds.ipv6 = {UpdateKind::SET, full.ipv6};
-    all_kinds.signing_key = {UpdateKind::DELETE, std::nullopt};
+    all_kinds.signing_key = {UpdateKind::REMOVE, std::nullopt};
     all_kinds.paymail_fee = {UpdateKind::SET, 7};
     NameUpdates records_set{all_kinds};
     records_set.records = {UpdateKind::SET, std::string{R"({"txt":"hi"})"}};
     NameUpdates records_deleted;
-    records_deleted.records = {UpdateKind::DELETE, std::nullopt};
+    records_deleted.records = {UpdateKind::REMOVE, std::nullopt};
     const std::vector<std::tuple<std::string, Marker, uint8_t>> cases{
         {"no operation", WithOp(Release{}, {}, {}), MARKER_VERSION},
         {"release", WithOp(Release{}), MARKER_VERSION},
@@ -1612,10 +1612,10 @@ BOOST_AUTO_TEST_CASE(dns_record_types)
     // A host of the map given as an address alone, one given as something else, and only what is of the type asked for.
     BOOST_CHECK((Texts(Resolve(state, "plain.core.x", dns::A)) == std::vector<std::string>{"A 198.51.100.3"}));
     const dns::Answer odd{Resolve(state, "odd.core.x", dns::ANY)};
-    BOOST_CHECK_EQUAL(odd.rcode, dns::NOERROR);
+    BOOST_CHECK_EQUAL(odd.rcode, dns::NOERR);
     BOOST_CHECK(odd.records.empty());
     BOOST_CHECK((Texts(Resolve(state, "v6.core.x", dns::AAAA)) == std::vector<std::string>{"AAAA 2001:db8::1"}));
-    BOOST_CHECK_EQUAL(Resolve(state, "x", dns::A).rcode, dns::NOERROR);
+    BOOST_CHECK_EQUAL(Resolve(state, "x", dns::A).rcode, dns::NOERR);
     // Every type at once.
     BOOST_CHECK_EQUAL(Resolve(state, "core.x", dns::ANY).records.size(), 1U + 2U + 2U + 1U);
 
@@ -1673,7 +1673,7 @@ BOOST_AUTO_TEST_CASE(dns_reads_bounded_on_the_way_down)
     Registered(state, "start", start, 70, params);
     // 1 read for the name, 11 for the delegation (a read per label of the path, one for an ICANN name
     // of that text, one for the deepest subname), then 12 a label: 48 after three labels.
-    BOOST_CHECK_EQUAL(Resolve(state, "q.q.q.start.x", dns::A).rcode, dns::NOERROR);
+    BOOST_CHECK_EQUAL(Resolve(state, "q.q.q.start.x", dns::A).rcode, dns::NOERR);
     BOOST_CHECK_EQUAL(Resolve(state, "q.q.q.q.start.x", dns::A).rcode, dns::SERVFAIL);
 }
 
@@ -1742,7 +1742,7 @@ BOOST_AUTO_TEST_CASE(record_rows)
     for (const char* field : {"commitment", "ipv4", "ipv6", "encryptionkey", "signingkey", "paymailfee", "records"}) all_null.pushKV(field, UniValue{});
     const NameUpdates deleted{ParseUpdates(all_null)};
     bool every{true};
-    ForEachField(deleted, [&](Field, const auto& update) { every &= update.kind == UpdateKind::DELETE; });
+    ForEachField(deleted, [&](Field, const auto& update) { every &= update.kind == UpdateKind::REMOVE; });
     BOOST_CHECK(every);
     const auto field{[](const std::string& key, const UniValue& value) {
         UniValue obj(UniValue::VOBJ);

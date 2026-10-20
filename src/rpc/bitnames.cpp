@@ -381,7 +381,7 @@ RPCMethod resolvename()
     LOCK(::cs_main);
     const auto answer{bitnames::Resolve(chainman.ActiveChainstate().SideState().BitNames(), request.params[0].get_str(), *type)};
     UniValue result(UniValue::VOBJ);
-    result.pushKV("status", answer.rcode == bitnames::dns::NOERROR ? "NOERROR" : answer.rcode == bitnames::dns::NXDOMAIN ? "NXDOMAIN" : answer.rcode == bitnames::dns::SERVFAIL ? "SERVFAIL" : "REFUSED");
+    result.pushKV("status", answer.rcode == bitnames::dns::NOERR ? "NOERROR" : answer.rcode == bitnames::dns::NXDOMAIN ? "NXDOMAIN" : answer.rcode == bitnames::dns::SERVFAIL ? "SERVFAIL" : "REFUSED");
     UniValue records(UniValue::VARR);
     for (const auto& record : answer.records) {
         UniValue obj(UniValue::VOBJ);
